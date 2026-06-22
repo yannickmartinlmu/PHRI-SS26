@@ -32,7 +32,7 @@ sudo apt install portaudio19-dev espeak-ng alsa-utils
 
 Inside a venv:
 ```
-pip install "setuptools==68.1.2" flask vosk bleak piper-tts sounddevice soundfile faster-whisper sentence-transformers
+pip install "setuptools==68.1.2" "empy==3.3.4" lark catkin_pkg flask vosk bleak piper-tts sounddevice soundfile faster-whisper sentence-transformers
 ```
 
 To download models:
