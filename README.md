@@ -66,7 +66,7 @@ A few notes:
 
 ### Simulating the arm
 We can simulate the drivers with kinovas official packages. However there are problems with simulating the gripper and there is some version mismatch. So we need to patch them. 
-Checkout the  `scripts/kinova_sim_setup.sh ` and run in on your own risk.  
+Checkout the  `scripts/kinova_sim_setup.sh ` and run in on your own risk.  Open a new terminal and source ros again, then you should be good to go.
 
 Upgrades to the package might restore the xacro without deleting the backup, so if it break after an update, remove the backup and run the script again.
 
