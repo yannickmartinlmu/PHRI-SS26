@@ -63,3 +63,13 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/me
 A few notes: 
 - setuptool needs to be downgraded, as newer version don't support Colcons --editable anymore. 
 - sentence transformers is by far the largest pip module. Don't install if you are not going to run it.
+
+### Simulating the arm
+We can simulate the drivers with kinovas official packages. However there are problems with simulating the gripper and there is some version mismatch. So we need to patch them. 
+Checkout the  `scripts/kinova_sim_setup.sh ` and run in on your own risk.  
+
+Upgrades to the package might restore the xacro without deleting the backup, so if it break after an update, remove the backup and run the script again.
+
+You get the joint_trajectory_controller + MoveIt + RViz.
+What does not work is the Gripper and the Twist Controller. 
+But i don't think we need the Twist Controller and the Gripper should be easy enough to get working on real hardware. 
