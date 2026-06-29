@@ -4,12 +4,13 @@
 set -euo pipefail
 
 XACRO="/opt/ros/jazzy/share/kortex_description/grippers/robotiq_2f_85/urdf/robotiq_2f_85_macro.xacro"
+LAUNCH="/opt/ros/jazzy/share/kinova_gen3_6dof_robotiq_2f_85_moveit_config/launch/robot.launch.py"
 
-echo "==> [1/3] Installing packages (moveit config pulls deps; joint-state-broadcaster is missing from them)"
+echo "==> [1/4] Installing packages (moveit config pulls deps; joint-state-broadcaster is missing from them)"
 sudo apt update
 sudo apt install -y "ros-jazzy-kinova-gen3-6dof-robotiq-2f-85-moveit-config" "ros-jazzy-joint-state-broadcaster"
 
-echo "==> [2/3] Patching $XACRO"
+echo "==> [2/4] Patching $XACRO"
 if [ -f "$XACRO.bak" ]; then
   echo "    .bak already exists -- assuming patched, skipping."
 else
@@ -27,7 +28,19 @@ else
   echo "    patched (backup at $XACRO.bak)"
 fi
 
-echo "==> [3/3] Done. Launch with:"
+echo "==> [3/4] Patching $LAUNCH"
+if [ -f "$LAUNCH.bak" ]; then
+  echo "    .bak already exists -- assuming patched, skipping."
+else
+  sudo cp "$LAUNCH" "$LAUNCH.bak"
+  # Give joints 1/4/6 finite +/-2pi limits (use_external_cable) instead of 'continuous'.
+  # Continuous joints must stay in [-pi,pi] or MoveIt's CheckStartStateBounds aborts plans
+  # (START_STATE_INVALID, -26) once the unconstrained wrist drifts past pi.
+  sudo sed -i 's/        "dof": "6",/&\n        "use_external_cable": "true",/' "$LAUNCH"
+  echo "    patched (backup at $LAUNCH.bak)"
+fi
+
+echo "==> [4/4] Done. Launch with:"
 cat <<EOF
 
   ros2 launch kinova_gen3_6dof_robotiq_2f_85_moveit_config robot.launch.py robot_ip:=192.168.1.10 use_fake_hardware:=true

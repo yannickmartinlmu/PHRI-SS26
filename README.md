@@ -68,6 +68,11 @@ A few notes:
 We can simulate the drivers with kinovas official packages. However there are problems with simulating the gripper and there is some version mismatch. So we need to patch them. 
 Checkout the  `scripts/kinova_sim_setup.sh ` and run in on your own risk.  Open a new terminal and source ros again, then you should be good to go.
 
+Start the sim with 
+```
+ros2 launch kinova_gen3_6dof_robotiq_2f_85_moveit_config robot.launch.py robot_ip:=192.168.1.10 use_fake_hardware:=true
+```
+
 Upgrades to the package might restore the xacro without deleting the backup, so if it break after an update, remove the backup and run the script again.
 
 You get the joint_trajectory_controller + MoveIt + RViz.

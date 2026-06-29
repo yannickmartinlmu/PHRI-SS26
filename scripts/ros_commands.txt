@@ -1,0 +1,47 @@
+Examplary move command with ros:
+
+ros2 action send_goal /move_action moveit_msgs/action/MoveGroup "{
+  request: {
+    group_name: manipulator,
+    num_planning_attempts: 5,
+    allowed_planning_time: 5.0,
+    max_velocity_scaling_factor: 0.3,
+    max_acceleration_scaling_factor: 0.3,
+    goal_constraints: [{
+      position_constraints: [{
+        header: { frame_id: base_link },
+        link_name: end_effector_link,
+        constraint_region: {
+          primitives: [{ type: 2, dimensions: [0.01] }],
+          primitive_poses: [{ position: { x: 0.4, y: 0.4, z: 0.4 } }]
+        },
+        weight: 1.0
+      }],
+      orientation_constraints: [{
+        header: { frame_id: base_link },
+        link_name: end_effector_link,
+        orientation: { w: 1.0 },
+        absolute_x_axis_tolerance: 0.1,
+        absolute_y_axis_tolerance: 0.1,
+        absolute_z_axis_tolerance: 0.1,
+        weight: 1.0
+      }]
+    }]
+  },
+  planning_options: { plan_only: false }
+}"
+
+
+
+Move back to Home position with forward kinematics:
+
+ros2 action send_goal /joint_trajectory_controller/follow_joint_trajectory \
+  control_msgs/action/FollowJointTrajectory "{
+    trajectory: {
+      joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6],
+      points: [
+        { positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+          time_from_start: { sec: 4 } }
+      ]
+    }
+  }"
