@@ -78,3 +78,11 @@ Upgrades to the package might restore the xacro without deleting the backup, so 
 You get the joint_trajectory_controller + MoveIt + RViz.
 What does not work is the Gripper and the Twist Controller. 
 But i don't think we need the Twist Controller and the Gripper should be easy enough to get working on real hardware. 
+
+#### Use GPU-Rendering
+For me, rviz defaulted to using slow software rendering. 
+Under WSL2, we can tell the Graphics Library (Gallium) to use whatever vendor-agnostic 3d library we have.
+So add this to your ~/.bashrc:
+```
+export GALLIUM_DRIVER=d3d12
+```
