@@ -45,3 +45,9 @@ ros2 action send_goal /joint_trajectory_controller/follow_joint_trajectory \
       ]
     }
   }"
+
+
+Get current end-affector pose:
+
+ros2 run tf2_ros tf2_echo base_link end_effector_link
+
