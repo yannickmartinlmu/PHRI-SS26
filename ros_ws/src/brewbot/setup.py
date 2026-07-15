@@ -31,7 +31,8 @@ setup(
             'sensor_hr = brewbot.sensor_hr:main',
             'interaction_manager = brewbot.interaction_manager:main',
             'tts = brewbot.tts:main',
-            'state_estimator = brewbot.state_estimator:main'
+            'state_estimator = brewbot.state_estimator:main',
+            'arm_controller = brewbot.arm_controller:main'
         ],
     },
 )
