@@ -19,6 +19,7 @@ way to an identical target:
 
 import sys
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -34,13 +35,19 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
 
-# Elmo rail setpoints (Float32). carriage = base_link -X, lift = Z. See elmo-axis-mapping.
-ELMO_CARRIAGE_SET = "/elmo/id1/carriage/position/set"
-ELMO_CARRIAGE_GET = "/elmo/id1/carriage/position/get"
+# Elmo setpoints (Float32). carriage = base_link -X, lift = Z. See elmo-axis-mapping.
+# Both axes speak the identical topic pair, so one primitive drives them both.
+ELMO_AXES = ("carriage", "lift")
+ELMO_SET = "/elmo/id1/{axis}/position/set"
+ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 # Rail carriage targets. Metric scale and positions ASSUMED 1 unit = 1 m — unconfirmed.
 RAIL_STATION = 0.0    # drink-filling station
 RAIL_USER = 1.0       # handover position
+
+ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
+ELMO_TIMEOUT = 30.0     # sec; raise rather than block the whole BringDrink goal
+ELMO_POLL = 0.1         # sec between feedback checks
 
 FK_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 MOVEIT_ACTION = "/move_action"
@@ -97,12 +104,17 @@ class ArmController(Node):
         super().__init__("arm_controller")
         cb = ReentrantCallbackGroup()
 
-        # Elmo rail: setpoint out, feedback in.
-        self._elmo_pub = self.create_publisher(Float32, ELMO_CARRIAGE_SET, 10)
-        self._elmo_pos = None
-        self.create_subscription(
-            Float32, ELMO_CARRIAGE_GET, self._on_elmo, 10, callback_group=cb
-        )
+        # Elmo: setpoint out, feedback in, per axis.
+        self._elmo_pub = {}
+        self._elmo_pos = {}
+        for axis in ELMO_AXES:
+            self._elmo_pub[axis] = self.create_publisher(
+                Float32, ELMO_SET.format(axis=axis), 10)
+            self._elmo_pos[axis] = None
+            self.create_subscription(
+                Float32, ELMO_GET.format(axis=axis),
+                lambda msg, a=axis: self._on_elmo(a, msg), 10, callback_group=cb
+            )
 
         # Both arm backends stay wired; the parameter only picks which one sends.
         self.use_moveit = self.declare_parameter("use_moveit", True).value
@@ -131,8 +143,8 @@ class ArmController(Node):
         self._busy = True
         return GoalResponse.ACCEPT
 
-    def _on_elmo(self, msg):
-        self._elmo_pos = msg.data
+    def _on_elmo(self, axis, msg):
+        self._elmo_pos[axis] = msg.data
 
     # ---- motion primitives: the ONE place each hardware path gets implemented ----
 
@@ -202,10 +214,24 @@ class ArmController(Node):
         if not (result.reached_goal or result.stalled):
             raise RuntimeError(f"gripper stuck at {result.position}")
 
-    def _move_elmo(self, target_carriage_position):
-        # TODO: after publishing, wait for _elmo_pos to settle near target.
-        self.get_logger().info(f"[elmo] carriage -> {target_carriage_position} (stub)")
-        self._elmo_pub.publish(Float32(data=float(target_carriage_position)))
+    def _move_elmo(self, axis, target_position):
+        # float(): skills reach here from the CLI, where every arg is still a string.
+        target = float(target_position)
+        self.get_logger().info(f"[elmo] {axis} -> {target}")
+        self._elmo_pub[axis].publish(Float32(data=target))
+
+        # Poll the feedback topic — the Elmo reports position but has no done signal.
+        # Blocking is fine: another thread spins, same as the action clients.
+        deadline = time.monotonic() + ELMO_TIMEOUT
+        while time.monotonic() < deadline:
+            time.sleep(ELMO_POLL)
+            position = self._elmo_pos[axis]
+            # None = no feedback yet; arriving is only knowable once a reading lands.
+            if position is not None and abs(position - target) <= ELMO_TOLERANCE:
+                return
+        raise RuntimeError(
+            f"elmo {axis} did not reach {target} within {ELMO_TIMEOUT}s "
+            f"(last feedback: {self._elmo_pos[axis]})")
 
     # ---- skills: individually callable (ros2 run brewbot arm_controller <skill>) ----
 
@@ -217,7 +243,11 @@ class ArmController(Node):
 
     def move_rail(self, target_carriage_position):
         self.tuck()  # INVARIANT: arm safe-by-construction before ANY rail move
-        self._move_elmo(target_carriage_position)
+        self._move_elmo("carriage", target_carriage_position)
+
+    def move_lift(self, target_lift_position):
+        self.tuck()  # same invariant: the lift drags the whole arm through Z
+        self._move_elmo("lift", target_lift_position)
 
     def open_gripper(self):
         self._gripper(GRIPPER_OPEN)
