@@ -8,6 +8,13 @@ cross-node arbitration. Skills are stubs here — fill each with a canned motion
 Every hardware path is funnelled through one primitive (_move_arm / _gripper /
 _move_elmo) so the joint-constraint-vs-pose-goal question — teleop is only proven
 in sim so far — is decided in exactly one place without touching the skills.
+
+_move_arm has two interchangeable backends, both driven from the SAME joint-angle
+table (MoveIt takes joint_constraints, not just pose goals), so switching can never
+land the arm somewhere different — MoveIt only adds collision-aware planning on the
+way to an identical target:
+    -p use_moveit:=true   MoveGroup /move_action        (planned, collision-aware)
+    -p use_moveit:=false  FollowJointTrajectory         (dumb, direct, always works)
 """
 
 import sys
@@ -15,11 +22,16 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionServer, GoalResponse
+from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import Float32
+from control_msgs.action import FollowJointTrajectory
+from moveit_msgs.action import MoveGroup
+from moveit_msgs.msg import Constraints, JointConstraint
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
 
 # Elmo rail setpoints (Float32). carriage = base_link -X, lift = Z. See elmo-axis-mapping.
@@ -29,6 +41,45 @@ ELMO_CARRIAGE_GET = "/elmo/id1/carriage/position/get"
 # Rail carriage targets. Metric scale and positions ASSUMED 1 unit = 1 m — unconfirmed.
 RAIL_STATION = 0.0    # drink-filling station
 RAIL_USER = 1.0       # handover position
+
+FK_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
+MOVEIT_ACTION = "/move_action"
+MOVE_GROUP = "manipulator"
+
+JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+
+# Per-joint |limit|, from kortex_description gen3/6dof/urdf/gen3_macro.xacro.
+# Continuous joints (1/4/6 without use_external_cable) get 2*pi — a safe bound either way.
+JOINT_LIMITS = [6.28, 2.24, 2.57, 6.28, 2.09, 6.28]
+
+FK_MOVE_TIME = 8          # sec; matches the hand-tested commands in info/ros_commands.txt
+JOINT_TOLERANCE = 0.01    # rad, MoveIt goal window
+
+# Named arm poses in JOINT SPACE — the single table both backends consume.
+# None = not teached yet: jog the arm, then `ros2 topic echo /joint_states`.
+POSES = {
+    "home":        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, -1.57],  # glass-transport pose, sim-tested
+    "above_glass": None,
+    "at_glass":    None,
+    "fill_coffee": None,
+    "fill_water":  None,
+    "handover":    None,
+}
+
+
+def _check_poses():
+    # Runs at import: a typo'd table refuses to start the node rather than
+    # commanding joint_6 to -26 rad (the wrist-bounds trap, see kinova-sim).
+    for name, angles in POSES.items():
+        if angles is None:
+            continue
+        assert len(angles) == len(JOINTS), f"POSES[{name}]: need {len(JOINTS)} angles"
+        for joint, angle, limit in zip(JOINTS, angles, JOINT_LIMITS):
+            assert abs(angle) <= limit, f"POSES[{name}]: {joint}={angle} exceeds ±{limit}"
+
+
+_check_poses()
 
 
 class ArmController(Node):
@@ -44,8 +95,14 @@ class ArmController(Node):
             Float32, ELMO_CARRIAGE_GET, self._on_elmo, 10, callback_group=cb
         )
 
-        # TODO: arm = MoveGroup client (/move_action); gripper = GripperCommand
-        # (/robotiq_gripper_controller/gripper_cmd). Wire when the motion path is chosen.
+        # Both arm backends stay wired; the parameter only picks which one sends.
+        self.use_moveit = self.declare_parameter("use_moveit", True).value
+        self._fk_client = ActionClient(
+            self, FollowJointTrajectory, FK_ACTION, callback_group=cb)
+        self._moveit_client = ActionClient(
+            self, MoveGroup, MOVEIT_ACTION, callback_group=cb)
+
+        # TODO: gripper = GripperCommand (/robotiq_gripper_controller/gripper_cmd).
 
         self._busy = False
         self._server = ActionServer(
@@ -70,10 +127,59 @@ class ArmController(Node):
     # ---- motion primitives: the ONE place each hardware path gets implemented ----
 
     def _move_arm(self, target_pose_name):
-        # Joint-constraint vs pose-goal undecided (teleop only tested in  sim).
-        # Reuse arm_teleop's /move_action client; both brew poses live here so
-        # the skills below never change when the path is chosen.
-        self.get_logger().info(f"[arm] -> {target_pose_name} (stub)")
+        angles = POSES[target_pose_name]
+        if angles is None:
+            raise RuntimeError(
+                f"pose '{target_pose_name}' not teached — jog the arm, read /joint_states, "
+                f"put the 6 angles in POSES")
+        how = "moveit" if self.use_moveit else "fk"
+        self.get_logger().info(f"[arm] -> {target_pose_name} via {how}")
+        if self.use_moveit:
+            self._move_arm_moveit(angles)
+        else:
+            self._move_arm_fk(angles)
+
+    def _send(self, client, goal):
+        # Blocking send. Safe only because a MultiThreadedExecutor keeps spinning in
+        # another thread — spin_until_future_complete (as in scripts/arm_teleop.py)
+        # would deadlock here.
+        client.wait_for_server()
+        response = client.send_goal(goal)
+        if response is None:
+            raise RuntimeError("arm goal REJECTED by the action server")
+        return response.result
+
+    def _move_arm_fk(self, angles):
+        # No IK, no collision checking: the joints go exactly where told.
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory = JointTrajectory(
+            joint_names=JOINTS,
+            points=[JointTrajectoryPoint(
+                positions=[float(a) for a in angles],
+                time_from_start=Duration(sec=FK_MOVE_TIME))])
+        result = self._send(self._fk_client, goal)
+        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            raise RuntimeError(
+                f"FK trajectory failed: {result.error_code} {result.error_string}")
+
+    def _move_arm_moveit(self, angles):
+        # Same targets as _move_arm_fk, but planned around collisions.
+        goal = MoveGroup.Goal()
+        request = goal.request
+        request.group_name = MOVE_GROUP
+        request.num_planning_attempts = 5
+        request.allowed_planning_time = 5.0
+        request.max_velocity_scaling_factor = 0.3
+        request.max_acceleration_scaling_factor = 0.3
+        request.goal_constraints.append(Constraints(joint_constraints=[
+            JointConstraint(joint_name=name, position=float(angle),
+                            tolerance_above=JOINT_TOLERANCE,
+                            tolerance_below=JOINT_TOLERANCE, weight=1.0)
+            for name, angle in zip(JOINTS, angles)]))
+        goal.planning_options.plan_only = False
+        result = self._send(self._moveit_client, goal)
+        if result.error_code.val != 1:  # MoveItErrorCodes.SUCCESS
+            raise RuntimeError(f"MoveIt planning failed: error_code={result.error_code.val}")
 
     def _gripper(self, target_pos):
         # TODO: GripperCommand action, 0.0 open / 0.8 close (2F-140).
@@ -127,6 +233,11 @@ class ArmController(Node):
             self.handover()
             goal_handle.succeed()
             return BringDrink.Result(success=True)
+        except Exception as e:
+            # A raised motion must abort the goal, not vanish into the callback.
+            self.get_logger().error(f"[bring_drink] failed: {e}")
+            goal_handle.abort()
+            return BringDrink.Result(success=False)
         finally:
             self._busy = False  # never leave the controller wedged as busy
 
@@ -138,7 +249,9 @@ def main():
     executor.add_node(node)
 
     # Address one skill directly: `ros2 run brewbot arm_controller pick_glass` (or `fill coffee`).
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    # Cut at --ros-args first, or `-p use_moveit:=false` gets read as a skill name.
+    argv = sys.argv[1:sys.argv.index("--ros-args")] if "--ros-args" in sys.argv else sys.argv[1:]
+    args = [a for a in argv if not a.startswith("-")]
     if args:
         # Spin in the background so skills get action results and topic callbacks
         # exactly as they do under the action server — one waiting style everywhere.
