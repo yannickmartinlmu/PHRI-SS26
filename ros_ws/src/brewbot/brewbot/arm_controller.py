@@ -27,7 +27,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import Float32
-from control_msgs.action import FollowJointTrajectory
+from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, JointConstraint
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -55,6 +55,12 @@ JOINT_LIMITS = [6.28, 2.24, 2.57, 6.28, 2.09, 6.28]
 FK_MOVE_TIME = 8          # sec; matches the hand-tested commands in info/ros_commands.txt
 JOINT_TOLERANCE = 0.01    # rad, MoveIt goal window
 
+GRIPPER_ACTION = "/robotiq_gripper_controller/gripper_cmd"
+GRIPPER_LIMIT = 0.8       # 2F-140 mechanical close limit, per info/phri-reference-guide.md
+GRIPPER_OPEN = 0.0
+GRIPPER_CLOSED = 0.6      # tune against the real glass — GRIPPER_LIMIT crushes it
+GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
+
 # Named arm poses in JOINT SPACE — the single table both backends consume.
 # None = not teached yet: jog the arm, then `ros2 topic echo /joint_states`.
 POSES = {
@@ -77,6 +83,9 @@ def _check_poses():
         assert len(angles) == len(JOINTS), f"POSES[{name}]: need {len(JOINTS)} angles"
         for joint, angle, limit in zip(JOINTS, angles, JOINT_LIMITS):
             assert abs(angle) <= limit, f"POSES[{name}]: {joint}={angle} exceeds ±{limit}"
+    # Same idea for the hand-tuned gripper knobs: a typo jams the fingers.
+    for name, pos in [("GRIPPER_OPEN", GRIPPER_OPEN), ("GRIPPER_CLOSED", GRIPPER_CLOSED)]:
+        assert 0.0 <= pos <= GRIPPER_LIMIT, f"{name}={pos} outside 0.0..{GRIPPER_LIMIT}"
 
 
 _check_poses()
@@ -102,7 +111,8 @@ class ArmController(Node):
         self._moveit_client = ActionClient(
             self, MoveGroup, MOVEIT_ACTION, callback_group=cb)
 
-        # TODO: gripper = GripperCommand (/robotiq_gripper_controller/gripper_cmd).
+        self._gripper_client = ActionClient(
+            self, GripperCommand, GRIPPER_ACTION, callback_group=cb)
 
         self._busy = False
         self._server = ActionServer(
@@ -182,8 +192,15 @@ class ArmController(Node):
             raise RuntimeError(f"MoveIt planning failed: error_code={result.error_code.val}")
 
     def _gripper(self, target_pos):
-        # TODO: GripperCommand action, 0.0 open / 0.8 close (2F-140).
-        self.get_logger().info(f"[gripper] {target_pos} (stub)")
+        self.get_logger().info(f"[gripper] -> {target_pos}")
+        goal = GripperCommand.Goal()
+        goal.command.position = float(target_pos)
+        goal.command.max_effort = GRIPPER_MAX_EFFORT
+        result = self._send(self._gripper_client, goal)
+        # Holding a glass means stalled at max effort BEFORE reaching the setpoint —
+        # that is a successful grasp, so reached_goal alone would raise on every pick.
+        if not (result.reached_goal or result.stalled):
+            raise RuntimeError(f"gripper stuck at {result.position}")
 
     def _move_elmo(self, target_carriage_position):
         # TODO: after publishing, wait for _elmo_pos to settle near target.
@@ -203,10 +220,10 @@ class ArmController(Node):
         self._move_elmo(target_carriage_position)
 
     def open_gripper(self):
-        self._gripper(0.0)
+        self._gripper(GRIPPER_OPEN)
 
     def close_gripper(self):
-        self._gripper(0.8)
+        self._gripper(GRIPPER_CLOSED)
 
     def pick_glass(self):
         self._move_arm("above_glass"); self.open_gripper()
