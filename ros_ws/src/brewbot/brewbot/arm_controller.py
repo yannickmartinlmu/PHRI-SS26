@@ -17,6 +17,7 @@ way to an identical target:
     -p use_moveit:=false  FollowJointTrajectory         (dumb, direct, always works)
 """
 
+import os
 import sys
 import threading
 import time
@@ -30,10 +31,23 @@ from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Float32
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import Constraints, JointConstraint
+from moveit_msgs.msg import Constraints, JointConstraint, PlanningScene
+from moveit_msgs.srv import ApplyPlanningScene
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
+
+# Kitchen collision scene lives in scripts/kitchen_scene.py (single source of truth,
+# user-edited). Import it by path; --symlink-install makes realpath resolve to the real
+# source tree. A miss disables the scene but must NOT ground the arm.
+_SCRIPTS = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), *[".."] * 4, "scripts"))
+try:
+    if _SCRIPTS not in sys.path:
+        sys.path.insert(0, _SCRIPTS)
+    from kitchen_scene import build_scene
+except ImportError:
+    build_scene = None
 
 # Elmo setpoints (Float32). carriage = base_link -X, lift = Z. See elmo-axis-mapping.
 # Both axes speak the identical topic pair, so one primitive drives them both.
@@ -132,6 +146,16 @@ class ArmController(Node):
             goal_callback=self._on_goal, callback_group=cb
         )
 
+        # Kitchen collision scene: re-publish after every Elmo move + seed once at startup.
+        # base_link rides the rail and MoveIt won't re-transform a cached scene. Best-effort.
+        if build_scene is not None:
+            self._scene_client = self.create_client(
+                ApplyPlanningScene, "/apply_planning_scene", callback_group=cb)
+            self._scene_timer = self.create_timer(1.0, self._seed_scene, callback_group=cb)
+        else:
+            self.get_logger().warn(
+                f"kitchen_scene not importable from {_SCRIPTS} — collision scene disabled")
+
         self.get_logger().info("Arm controller ready")
 
     def _on_goal(self, goal_request):
@@ -145,6 +169,31 @@ class ArmController(Node):
 
     def _on_elmo(self, axis, msg):
         self._elmo_pos[axis] = msg.data
+
+    def _seed_scene(self):
+        # Seed the home scene once, as soon as both Elmo axes have reported, then stop.
+        if all(v is not None for v in self._elmo_pos.values()):
+            self._scene_timer.cancel()
+            self._publish_scene()
+
+    def _publish_scene(self):
+        # Re-cache the kitchen boxes for wherever the rail is NOW. Best-effort: a scene
+        # failure logs and returns — it must never abort a drink. See project-kitchen-scene.
+        if build_scene is None:
+            return
+        carriage, lift = self._elmo_pos["carriage"], self._elmo_pos["lift"]
+        if carriage is None or lift is None:
+            self.get_logger().warn(f"[scene] no Elmo feedback yet — skipped")
+            return
+        if not self._scene_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn("[scene] /apply_planning_scene unavailable — skipped")
+            return
+        ps = PlanningScene(is_diff=True)
+        ps.world.collision_objects = build_scene(carriage, lift)
+        result = self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
+        ok = result is not None and result.success
+        self.get_logger().info(f"[scene] {len(ps.world.collision_objects)} boxes @ "
+                               f"carriage={carriage} lift={lift} -> {ok}")
 
     # ---- motion primitives: the ONE place each hardware path gets implemented ----
 
@@ -228,6 +277,7 @@ class ArmController(Node):
             position = self._elmo_pos[axis]
             # None = no feedback yet; arriving is only knowable once a reading lands.
             if position is not None and abs(position - target) <= ELMO_TOLERANCE:
+                self._publish_scene()  # base_link moved along the rail -> re-cache boxes
                 return
         raise RuntimeError(
             f"elmo {axis} did not reach {target} within {ELMO_TIMEOUT}s "
