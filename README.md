@@ -79,6 +79,13 @@ You get the joint_trajectory_controller + MoveIt + RViz.
 What does not work is the Gripper and the Twist Controller. 
 But i don't think we need the Twist Controller and the Gripper should be easy enough to get working on real hardware. 
 
+Additionally there is a simple simulation for ELMO.
+To launch both of them simultanously, use the launch file:
+```
+ros2 launch PROJECTPATH/scripts/sim.launch.py
+```
+I also recommend setting an alias for this. 
+
 #### Use GPU-Rendering
 For me, rviz defaulted to using slow software rendering. 
 Under WSL2, we can tell the Graphics Library (Gallium) to use whatever vendor-agnostic 3d library we have.
