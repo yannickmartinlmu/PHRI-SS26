@@ -32,7 +32,8 @@ setup(
             'interaction_manager = brewbot.interaction_manager:main',
             'tts = brewbot.tts:main',
             'state_estimator = brewbot.state_estimator:main',
-            'arm_controller = brewbot.arm_controller:main'
+            'arm_controller = brewbot.arm_controller:main',
+            'elmo_sim = brewbot.elmo_sim:main'
         ],
     },
 )
