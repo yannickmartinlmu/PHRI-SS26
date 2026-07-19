@@ -55,9 +55,15 @@ ELMO_AXES = ("carriage", "lift")
 ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
-# Rail carriage targets. Metric scale and positions ASSUMED 1 unit = 1 m — unconfirmed.
-RAIL_STATION = 0.0    # drink-filling station
-RAIL_USER = 1.0       # handover position
+# Rail carriage targets. Positions assumed
+RAIL_KITCHEN = -0.5    # drink-filling station
+RAIL_HANDOVER = 1.0       # handover position
+
+# Lift height targets
+LIFT_HOME = 0.35      # same default as elmo sim
+LIFT_PICK_GLASS = 0.588
+LIFT_HANDOVER = 0.588
+
 
 ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
 ELMO_TIMEOUT = 30.0     # sec; raise rather than block the whole BringDrink goal
@@ -86,12 +92,12 @@ GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
 # None = not teached yet: jog the arm, then `ros2 topic echo /joint_states`.
 POSES = {
     "home":        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, -1.57],  # glass-transport pose, sim-tested
-    "above_glass": None,
-    "at_glass":    None,
+    "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
+    "above_glass": [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
+    "at_glass":    [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
     "fill_coffee": None,
     "fill_water":  None,
-    "handover":    None,
+    "handover":    [0, -1.57, 0, 0.0, 0.0, 1.57]
 }
 
 
@@ -254,6 +260,7 @@ class ArmController(Node):
 
     def _gripper(self, target_pos):
         self.get_logger().info(f"[gripper] -> {target_pos}")
+        return
         goal = GripperCommand.Goal()
         goal.command.position = float(target_pos)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
@@ -296,7 +303,6 @@ class ArmController(Node):
         self._move_elmo("carriage", target_carriage_position)
 
     def move_lift(self, target_lift_position):
-        self.tuck()  # same invariant: the lift drags the whole arm through Z
         self._move_elmo("lift", target_lift_position)
 
     def open_gripper(self):
@@ -306,15 +312,20 @@ class ArmController(Node):
         self._gripper(GRIPPER_CLOSED)
 
     def pick_glass(self):
-        self._move_arm("above_glass"); self.open_gripper()
-        self._move_arm("at_glass");    self.close_gripper()
-        self._move_arm("above_glass")
+        self._move_arm("above_glass"); 
+        self.open_gripper()
+        self.move_lift(LIFT_PICK_GLASS)
+        self.close_gripper()
+        self.move_lift(LIFT_HOME)
 
     def fill(self, drink):
         self._move_arm(f"fill_{drink}")
 
     def handover(self):
-        self._move_arm("handover"); self.open_gripper()
+        self._move_arm("handover"); 
+        self.move_lift(LIFT_HANDOVER)
+        self.open_gripper()
+        self.move_lift(LIFT_HOME)
 
     # ---- orchestration: BringDrink = skills in sequence ----
 
@@ -323,10 +334,10 @@ class ArmController(Node):
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
             self.tuck()
-            self.move_rail(RAIL_STATION)
+            # self.move_rail(RAIL_STATION)
             self.pick_glass()
             self.fill(drink)
-            self.move_rail(RAIL_USER)
+            # self.move_rail(RAIL_USER)
             self.handover()
             goal_handle.succeed()
             return BringDrink.Result(success=True)
