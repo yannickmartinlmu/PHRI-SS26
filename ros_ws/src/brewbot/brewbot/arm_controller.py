@@ -359,7 +359,14 @@ def main():
     # Address one skill directly: `ros2 run brewbot arm_controller pick_glass` (or `fill coffee`).
     # Cut at --ros-args first, or `-p use_moveit:=false` gets read as a skill name.
     argv = sys.argv[1:sys.argv.index("--ros-args")] if "--ros-args" in sys.argv else sys.argv[1:]
-    args = [a for a in argv if not a.startswith("-")]
+    # Drop flags (-p, --ros-args) but keep negative numbers like -0.3.
+    def _is_flag(a):
+        try:
+            float(a)
+            return False
+        except ValueError:
+            return a.startswith("-")
+    args = [a for a in argv if not _is_flag(a)]
     if args:
         # Spin in the background so skills get action results and topic callbacks
         # exactly as they do under the action server — one waiting style everywhere.
