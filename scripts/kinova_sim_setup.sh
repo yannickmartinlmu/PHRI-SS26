@@ -40,6 +40,16 @@ else
   echo "    patched (backup at $LAUNCH.bak)"
 fi
 
+echo "==> [3b/4] Registering PILZ pipeline in $LAUNCH (PTP = minimal-joint-change moves)"
+# move_group only loads pipelines listed here; stock launch has ompl only, so PILZ
+# PTP goals return code=0. Content-guarded (not .bak) so it applies on re-runs too.
+if grep -q 'pilz_industrial_motion_planner' "$LAUNCH"; then
+  echo "    already registered, skipping."
+else
+  sudo sed -i 's/pipelines=\["ompl"\]/pipelines=["ompl", "pilz_industrial_motion_planner"]/' "$LAUNCH"
+  echo "    registered."
+fi
+
 echo "==> [4/4] Done. Launch with:"
 cat <<EOF
 

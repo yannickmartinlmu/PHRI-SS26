@@ -79,12 +79,24 @@ You get the joint_trajectory_controller + MoveIt + RViz.
 What does not work is the Gripper and the Twist Controller. 
 But i don't think we need the Twist Controller and the Gripper should be easy enough to get working on real hardware. 
 
+#### ELMO
 Additionally there is a simple simulation for ELMO.
 To launch both of them simultanously, use the launch file:
 ```
 ros2 launch PROJECTPATH/scripts/sim.launch.py
 ```
 I also recommend setting an alias for this. 
+
+#### PILZ
+PILZ is another motion planning pipeline. 
+In theory it can minimize either gripper path through space or minimal joint angle changes. 
+It needs to be loaded by the launch file of the sim. 
+The sim_setup script handles it. 
+We need to add ```"pilz_industrial_motion_planner"``` to ```.planning_pipelines(pipelines=["ompl"])``` in
+```
+/opt/ros/jazzy/share/kinova_gen3_6dof_robotiq_2f_85_moveit_config/launch/robot.launch.py
+```
+or wherever the kinova driver lives. 
 
 #### Use GPU-Rendering
 For me, rviz defaulted to using slow software rendering. 
