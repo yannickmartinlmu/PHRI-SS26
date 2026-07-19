@@ -7,18 +7,18 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 
-from brewbot_interfaces.action import SuggestDrink
+from brewbot_interfaces.action import BringDrink
 
 
 class DrinkWebNode(Node):
 
     def __init__(self):
         super().__init__("web_ui")
-        self._action_client = ActionClient(self, SuggestDrink, 'suggest_drink')
+        self._action_client = ActionClient(self, BringDrink, 'bring_drink')
 
     def suggest_drink(self, drink):
         if not self._action_client.wait_for_server(timeout_sec=3.0):
-            self.get_logger().warn("Suggestion handler not available")
+            self.get_logger().warn("Arm Controller not available")
             return None
 
         result_event = threading.Event()
@@ -36,7 +36,7 @@ class DrinkWebNode(Node):
             gh.get_result_async().add_done_callback(on_result)
 
         self._action_client.send_goal_async(
-            SuggestDrink.Goal(drink=drink)
+            BringDrink.Goal(drink=drink)
         ).add_done_callback(on_goal)
 
         result_event.wait(timeout=60.0)
@@ -146,7 +146,7 @@ def select_drink(drink):
 
     if result is None:
         message = "Suggestion handler not available."
-    elif result.accepted:
+    elif result.success:
         message = f"On its way!"
     else:
         message = f"Maybe next time."
