@@ -95,8 +95,9 @@ POSES = {
     "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
     "above_glass": [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
     "at_glass":    [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
-    "fill_coffee": None,
-    "fill_water":  None,
+    # Placeholder gestures (distinct wrist tilt) until the real fill stations are taught.
+    "fill_coffee": [-3.14, 0.0, 1.57, 1.57, 0.0, 0.0],
+    "fill_water":  [-3.14, 0.0, 1.57, -1.57, 0.0, 3.14],
     "handover":    [0, -1.57, 0, 0.0, 0.0, 1.57]
 }
 
@@ -339,6 +340,7 @@ class ArmController(Node):
             self.fill(drink)
             # self.move_rail(RAIL_USER)
             self.handover()
+            self.tuck()
             goal_handle.succeed()
             return BringDrink.Result(success=True)
         except Exception as e:
