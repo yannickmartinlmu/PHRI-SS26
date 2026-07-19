@@ -245,8 +245,8 @@ class ArmController(Node):
         goal = MoveGroup.Goal()
         request = goal.request
         request.group_name = MOVE_GROUP
-        request.num_planning_attempts = 5
-        request.allowed_planning_time = 5.0
+        request.num_planning_attempts = 16
+        request.allowed_planning_time = 10.0
         request.max_velocity_scaling_factor = 0.3
         request.max_acceleration_scaling_factor = 0.3
         request.goal_constraints.append(Constraints(joint_constraints=[
