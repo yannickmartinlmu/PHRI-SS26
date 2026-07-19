@@ -56,13 +56,13 @@ ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 # Rail carriage targets. Positions assumed
-RAIL_KITCHEN = -0.5    # drink-filling station
-RAIL_HANDOVER = 1.0       # handover position
+RAIL_KITCHEN = -1.1    # drink-filling station
+RAIL_HANDOVER = 1.1       # handover position
 
 # Lift height targets
 LIFT_HOME = 0.35      # same default as elmo sim
 LIFT_PICK_GLASS = 0.588
-LIFT_HANDOVER = 0.588
+LIFT_HANDOVER = 0.45
 
 
 ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
@@ -93,12 +93,12 @@ GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
 POSES = {
     "home":        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
-    "above_glass": [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
-    "at_glass":    [-3.14, 0.0, 1.57, 0.0, 0.0, 1.57],
+    "above_glass": [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
+    "at_glass":    [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
     # Placeholder gestures (distinct wrist tilt) until the real fill stations are taught.
-    "fill_coffee": [-3.14, 0.0, 1.57, 1.57, 0.0, 0.0],
-    "fill_water":  [-3.14, 0.0, 1.57, -1.57, 0.0, 3.14],
-    "handover":    [0, -1.57, 0, 0.0, 0.0, 1.57]
+    "fill_coffee": [0.65, 0.5, 1.05, 0, 1, 1.57],
+    "fill_water":  [0.65, 0.5, 1.05, 0, 1, 1.57],
+    "handover":    [0, -0.78, 0.0, 0.0, 0.78, 1.57]
 }
 
 
@@ -334,11 +334,12 @@ class ArmController(Node):
         drink = goal_handle.request.drink
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
-            self.tuck()
-            # self.move_rail(RAIL_STATION)
+            self.move_rail(RAIL_HANDOVER)
+            self.move_lift(LIFT_HOME)
             self.pick_glass()
+            self.move_rail(RAIL_KITCHEN)
             self.fill(drink)
-            # self.move_rail(RAIL_USER)
+            self.move_rail(RAIL_HANDOVER)
             self.handover()
             self.tuck()
             goal_handle.succeed()
