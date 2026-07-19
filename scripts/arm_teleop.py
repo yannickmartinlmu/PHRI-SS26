@@ -75,6 +75,11 @@ HORIZ = qmul(qmul(_from_axis_angle((0.0, 1.0, 0.0), radians(90)),
              _from_axis_angle((0.0, 0.0, 1.0), radians(90)))
 HORIZ_TOL = (0.1, 0.05, 0.1)
 
+# PILZ PTP moves joint-to-joint from the current config (nearest IK, no random
+# OMPL sampling) so a small pose nudge = a small joint change -- no wrist flips.
+# Auto-falls back to OMPL (empty pipeline) if PILZ isn't installed/configured.
+USE_PILZ = True
+
 
 def read_key():
     import termios, tty
@@ -106,7 +111,7 @@ def lookup_pose(rclpy, node, buffer):
     raise RuntimeError("no TF base_link->end_effector_link")
 
 
-def make_goal(pos, quat, tol=(0.1, 0.1, 0.1)):
+def make_goal(pos, quat, tol=(0.1, 0.1, 0.1), pilz=True):
     from moveit_msgs.action import MoveGroup
     from moveit_msgs.msg import (Constraints, PositionConstraint,
                                  OrientationConstraint, BoundingVolume)
@@ -116,6 +121,9 @@ def make_goal(pos, quat, tol=(0.1, 0.1, 0.1)):
     goal = MoveGroup.Goal()
     req = goal.request
     req.group_name = "manipulator"
+    if pilz:  # else empty pipeline_id -> configured default (OMPL)
+        req.pipeline_id = "pilz_industrial_motion_planner"
+        req.planner_id = "PTP"
     req.num_planning_attempts = 5
     req.allowed_planning_time = 5.0
     req.max_velocity_scaling_factor = 0.3
@@ -151,19 +159,20 @@ def make_goal(pos, quat, tol=(0.1, 0.1, 0.1)):
 
 
 def send(rclpy, node, client, goal):
+    """Returns (ok, error_code); ok is True only on SUCCESS (code 1)."""
     fut = client.send_goal_async(goal)
     rclpy.spin_until_future_complete(node, fut)
     handle = fut.result()
     if not handle.accepted:
-        print("  goal REJECTED")
-        return
+        return False, None
     res_fut = handle.get_result_async()
     rclpy.spin_until_future_complete(node, res_fut)
     code = res_fut.result().result.error_code.val
-    print("  done" if code == 1 else f"  FAILED error_code={code}")
+    return code == 1, code
 
 
 def main():
+    global USE_PILZ
     import rclpy
     from rclpy.action import ActionClient
     from moveit_msgs.action import MoveGroup
@@ -195,7 +204,12 @@ def main():
             else:
                 quat = rotate(quat, key)
             print(f"  target pos={pos} quat={tuple(round(c, 3) for c in quat)}")
-            send(rclpy, node, client, make_goal(pos, quat, tol))
+            ok, code = send(rclpy, node, client, make_goal(pos, quat, tol, USE_PILZ))
+            if not ok and USE_PILZ:  # PILZ missing/misconfigured -> OMPL, once
+                USE_PILZ = False
+                print(f"  PILZ failed (code={code}) -> falling back to OMPL")
+                ok, code = send(rclpy, node, client, make_goal(pos, quat, tol, False))
+            print("  done" if ok else f"  FAILED error_code={code}")
     finally:
         rclpy.shutdown()
 
