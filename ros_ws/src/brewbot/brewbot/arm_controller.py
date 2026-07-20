@@ -32,7 +32,7 @@ from std_msgs.msg import Float32
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, JointConstraint, PlanningScene
-from moveit_msgs.srv import ApplyPlanningScene
+from moveit_msgs.srv import ApplyPlanningScene, GetStateValidity
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
@@ -63,6 +63,8 @@ RAIL_HANDOVER = 1.1       # handover position
 LIFT_HOME = 0.35      # same default as elmo sim
 LIFT_PICK_GLASS = 0.588
 LIFT_HANDOVER = 0.45
+LIFT_COLLISION_STEP = 0.05  # m; virtual sweep resolution for the lift safety check.
+# ponytail: tunneling knob — arm width catches thinner boxes, shrink if one slips through.
 
 
 ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
@@ -158,6 +160,8 @@ class ArmController(Node):
         if build_scene is not None:
             self._scene_client = self.create_client(
                 ApplyPlanningScene, "/apply_planning_scene", callback_group=cb)
+            self._validity_client = self.create_client(
+                GetStateValidity, "/check_state_validity", callback_group=cb)
             self._scene_timer = self.create_timer(1.0, self._seed_scene, callback_group=cb)
         else:
             self.get_logger().warn(
@@ -308,7 +312,51 @@ class ArmController(Node):
         self._move_elmo("carriage", target_carriage_position)
 
     def move_lift(self, target_lift_position):
+        if not self._lift_path_clear(float(target_lift_position)):
+            raise RuntimeError(
+                f"lift path to {target_lift_position} blocked by collision — aborting")
         self._move_elmo("lift", target_lift_position)
+
+    def _lift_path_clear(self, target):
+        # Elmo isn't a MoveIt joint, so MoveIt can't plan the lift. Instead: freeze the arm,
+        # virtually move the kitchen boxes to each height the arm sweeps through, and ask
+        # /check_state_validity if the current arm state collides. is_diff=True + empty state
+        # means "the arm where it is right now". /apply_planning_scene is a service (synchronous
+        # apply), so the scene is live before each check. Dynamic obstacles enter the same scene
+        # and get checked for free. FAIL-OPEN: if the check can't run, warn loudly and allow.
+        current, carriage = self._elmo_pos["lift"], self._elmo_pos["carriage"]
+        if build_scene is None or current is None or carriage is None:
+            self.get_logger().warn("[lift-check] no scene/feedback — SKIPPING collision check")
+            return True
+        if not self._validity_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn("[lift-check] /check_state_validity unavailable — SKIPPING")
+            return True
+
+        # Sampled heights: every step from current toward target, plus target itself (a
+        # partial final step must still be checked — a 0.08 m move checks 0.05 AND 0.08).
+        step = LIFT_COLLISION_STEP if target >= current else -LIFT_COLLISION_STEP
+        heights, h = [], current + step
+        while (step > 0 and h < target) or (step < 0 and h > target):
+            heights.append(h)
+            h += step
+        heights.append(target)
+
+        clear = True
+        for lift in heights:
+            ps = PlanningScene(is_diff=True)
+            ps.world.collision_objects = build_scene(carriage, lift)
+            self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
+            req = GetStateValidity.Request()
+            req.robot_state.is_diff = True  # empty state + is_diff = current monitored arm
+            req.group_name = MOVE_GROUP
+            result = self._validity_client.call(req)
+            if result is not None and not result.valid:
+                self.get_logger().warn(f"[lift-check] collision at lift={lift:.3f} — blocked")
+                clear = False
+                break
+
+        self._publish_scene()  # restore the scene to where the arm actually is
+        return clear
 
     def open_gripper(self):
         self._gripper(GRIPPER_OPEN)
