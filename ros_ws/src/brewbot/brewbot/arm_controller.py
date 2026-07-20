@@ -95,8 +95,8 @@ POSES = {
     "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
     "above_glass": [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
     "at_glass":    [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
-    # Placeholder gestures (distinct wrist tilt) until the real fill stations are taught.
-    "fill_coffee": [0.65, 0.5, 1.05, 0, 1, 1.57],
+    # Placeholder values. Confirm in the real world by aproaching slowly
+    "fill_coffee": [2.3, 0.3, 1.05, 0, 0.8, 1.57],
     "fill_water":  [0.65, 0.5, 1.05, 0, 1, 1.57],
     "handover":    [0, -0.78, 0.0, 0.0, 0.78, 1.57]
 }
@@ -204,7 +204,7 @@ class ArmController(Node):
 
     # ---- motion primitives: the ONE place each hardware path gets implemented ----
 
-    def _move_arm(self, target_pose_name):
+    def move_arm(self, target_pose_name):
         angles = POSES[target_pose_name]
         if angles is None:
             raise RuntimeError(
@@ -294,10 +294,10 @@ class ArmController(Node):
     # ---- skills: individually callable (ros2 run brewbot arm_controller <skill>) ----
 
     def home(self):
-        self._move_arm("home")
+        self.move_arm("home")
 
     def tuck(self):
-        self._move_arm("tuck")
+        self.move_arm("tuck")
 
     def move_rail(self, target_carriage_position):
         self.tuck()  # INVARIANT: arm safe-by-construction before ANY rail move
@@ -313,17 +313,17 @@ class ArmController(Node):
         self._gripper(GRIPPER_CLOSED)
 
     def pick_glass(self):
-        self._move_arm("above_glass"); 
+        self.move_arm("above_glass"); 
         self.open_gripper()
         self.move_lift(LIFT_PICK_GLASS)
         self.close_gripper()
         self.move_lift(LIFT_HOME)
 
     def fill(self, drink):
-        self._move_arm(f"fill_{drink}")
+        self.move_arm(f"fill_{drink}")
 
     def handover(self):
-        self._move_arm("handover"); 
+        self.move_arm("handover"); 
         self.move_lift(LIFT_HANDOVER)
         self.open_gripper()
         self.move_lift(LIFT_HOME)
