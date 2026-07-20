@@ -217,6 +217,10 @@ class ArmController(Node):
         else:
             self._move_arm_fk(angles)
 
+    def move_arm_through_poses(self, target_pose_names):
+        for pose in target_pose_names:
+            self._move_arm_fk(POSES[pose])
+
     def _send(self, client, goal):
         # Blocking send. Safe only because a MultiThreadedExecutor keeps spinning in
         # another thread — spin_until_future_complete (as in scripts/arm_teleop.py)
