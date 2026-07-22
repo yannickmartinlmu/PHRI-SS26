@@ -61,8 +61,9 @@ RAIL_HANDOVER = 1.1       # handover position
 
 # Lift height targets
 LIFT_HOME = 0.35      # same default as elmo sim
-LIFT_PICK_GLASS = 0.588
-LIFT_HANDOVER = 0.45
+LIFT_PICK_GLASS = 0.57
+LIFT_HANDOVER = 0.43
+LIFT_MIN = 0.235
 LIFT_COLLISION_STEP = 0.05  # m; virtual sweep resolution for the lift safety check.
 # ponytail: tunneling knob — arm width catches thinner boxes, shrink if one slips through.
 
@@ -87,20 +88,23 @@ JOINT_TOLERANCE = 0.01    # rad, MoveIt goal window
 GRIPPER_ACTION = "/robotiq_gripper_controller/gripper_cmd"
 GRIPPER_LIMIT = 0.8       # 2F-140 mechanical close limit, per info/phri-reference-guide.md
 GRIPPER_OPEN = 0.0
-GRIPPER_CLOSED = 0.6      # tune against the real glass — GRIPPER_LIMIT crushes it
+GRIPPER_CLOSED = 0.5      # tune against the real glass — GRIPPER_LIMIT crushes it
 GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
 
 # Named arm poses in JOINT SPACE — the single table both backends consume.
 # None = not teached yet: jog the arm, then `ros2 topic echo /joint_states`.
 POSES = {
-    "home":        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "tuck":        [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
-    "above_glass": [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
-    "at_glass":    [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
+    "home":         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "tuck":         [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
+    "above_glass":  [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57],
+    "at_glass":     [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57],
+    "above_glass_old":  [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
     # Placeholder values. Confirm in the real world by aproaching slowly
-    "fill_coffee": [2.3, 0.3, 1.05, 0, 0.8, 1.57],
-    "fill_water":  [0.65, 0.5, 1.05, 0, 1, 1.57],
-    "handover":    [0, -0.78, 0.0, 0.0, 0.78, 1.57]
+    "fill_coffee":  [2.3, 0.3, 1.05, 0, 0.8, 1.57],
+    "fill_water":   [0.65, 0.5, 1.05, 0, 1, 1.57],
+    "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57], 
+    "handover_old": [0, -0.78, 0.0, 0.0, 0.78, 1.57],
+    "test":         [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57]
 }
 
 
@@ -269,7 +273,6 @@ class ArmController(Node):
 
     def _gripper(self, target_pos):
         self.get_logger().info(f"[gripper] -> {target_pos}")
-        return
         goal = GripperCommand.Goal()
         goal.command.position = float(target_pos)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
