@@ -56,7 +56,7 @@ ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 # Rail carriage targets. Positions assumed
-RAIL_KITCHEN = -1.1    # drink-filling station
+RAIL_KITCHEN = -0.6       # drink-filling station
 RAIL_HANDOVER = 1.1       # handover position
 
 # Lift height targets
@@ -101,10 +101,10 @@ POSES = {
     "above_glass_old":  [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
     # Placeholder values. Confirm in the real world by aproaching slowly
     "fill_coffee":  [2.3, 0.3, 1.05, 0, 0.8, 1.57],
-    "fill_water":   [0.65, 0.5, 1.05, 0, 1, 1.57],
+    "fill_water":   [-3.53, 0.3, 0.75, 0.0, 1.15, 1.57],
     "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57], 
-    "handover_old": [0, -0.78, 0.0, 0.0, 0.78, 1.57],
-    "test":         [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57]
+    "handover_old": [0, -0.78, 0.0, 0.0, 0.78, 1.57]
+
 }
 
 
