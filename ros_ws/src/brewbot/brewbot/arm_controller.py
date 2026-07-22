@@ -368,6 +368,8 @@ class ArmController(Node):
         self._gripper(GRIPPER_CLOSED)
 
     def pick_glass(self):
+        self.move_lift(LIFT_HOME)
+        self.move_rail(RAIL_HANDOVER)
         self.move_arm("above_glass"); 
         self.open_gripper()
         self.move_lift(LIFT_PICK_GLASS)
@@ -375,13 +377,34 @@ class ArmController(Node):
         self.move_lift(LIFT_HOME)
 
     def fill(self, drink):
+        self.move_rail(RAIL_KITCHEN)
         self.move_arm(f"fill_{drink}")
 
     def handover(self):
         self.move_arm("handover"); 
         self.move_lift(LIFT_HANDOVER)
         self.open_gripper()
+        self.move_lift(LIFT_MIN)
+        self.tuck()
         self.move_lift(LIFT_HOME)
+        
+    def bring_bottle_simple(self):
+        self.pick_glass()
+        self.fill("water")
+        self.handover()
+
+    def retrieve_bottle_simple(self): 
+        self.move_lift(LIFT_MIN)
+        self.move_arm("handover"); 
+        self.move_lift(LIFT_HANDOVER)
+        self.close_gripper()
+        self.move_lift(LIFT_HOME)
+        self.move_arm("above_glass")
+        self.move_lift(LIFT_PICK_GLASS)
+        self.open_gripper()
+        self.move_lift(LIFT_HOME)
+        self.tuck()
+
 
     # ---- orchestration: BringDrink = skills in sequence ----
 
@@ -389,14 +412,10 @@ class ArmController(Node):
         drink = goal_handle.request.drink
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
-            self.move_rail(RAIL_HANDOVER)
-            self.move_lift(LIFT_HOME)
-            self.pick_glass()
-            self.move_rail(RAIL_KITCHEN)
-            self.fill(drink)
-            self.move_rail(RAIL_HANDOVER)
-            self.handover()
-            self.tuck()
+            if(drink == "water"):
+                self.bring_bottle_simple()
+            else: 
+                self.retrieve_bottle_simple()
             goal_handle.succeed()
             return BringDrink.Result(success=True)
         except Exception as e:
