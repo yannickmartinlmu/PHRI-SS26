@@ -50,12 +50,12 @@ Y_BOWL = (_sy - BOWL_D / 2, _sy + BOWL_D / 2)
 Z_RIM  = (TOP_Z, TOP_Z + BOWL_H)                    # top 18cm slab holding the bowl hole
 Z_BASE = (Z_RIM[1], FLOOR_Z)                        # solid cabinet below the bowl
 
-# faucet: 29 tall post at the bowl's back rim; 20-long spout, 5 thick, 24 above worktop.
+# faucet: 29 tall post at the bowl's back rim; 26-long spout, 5 thick, 24 above worktop.
 FX = ((X_BOWL[0] + X_BOWL[1]) / 2 - 0.025, (X_BOWL[0] + X_BOWL[1]) / 2 + 0.025)
 Z_POST  = (TOP_Z - 0.29, TOP_Z)
 Y_POST  = (Y_BOWL[1] - 0.05, Y_BOWL[1])
 Z_SPOUT = (TOP_Z - 0.29, TOP_Z - 0.24)              # 5cm band, 24..29 above worktop
-Y_SPOUT = (Y_BOWL[1] - 0.20, Y_BOWL[1])
+Y_SPOUT = (Y_BOWL[1] - 0.26, Y_BOWL[1])
 
 # desk: nearest (left) edge 98 to arm-right (-X); 120 wide, 70 deep, top at 105.
 DESK_TOP_H = 1.05
