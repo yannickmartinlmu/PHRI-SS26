@@ -173,6 +173,24 @@ class ArmController(Node):
 
         self.get_logger().info("Arm controller ready")
 
+    def wait_ready(self, timeout=20.0):
+        # DDS discovery over the lab network can take seconds. Publishing an Elmo
+        # setpoint before its subscriber is matched silently drops it (volatile
+        # QoS) — the one-shot CLI mode hit this constantly. Actions already gate
+        # on wait_for_server(); this is the same gate for the raw Elmo pub/sub.
+        deadline = time.monotonic() + timeout
+        def pending():
+            return [a for a in ELMO_AXES
+                    if self._elmo_pub[a].get_subscription_count() == 0
+                    or self._elmo_pos[a] is None]
+        while pending():
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"elmo axes {pending()} not discovered within {timeout}s — "
+                    f"is the Elmo node up?")
+            time.sleep(0.1)
+        self.get_logger().info("[elmo] discovery complete — both axes matched")
+
     def _on_goal(self, goal_request):
         # One arm, one goal at a time — reject rather than queue or run concurrently.
         # Simple flag, not a hard lock. Two goals landing in the same instant could both pass
@@ -450,6 +468,7 @@ def main():
         spin_thread = threading.Thread(target=executor.spin, daemon=True)
         spin_thread.start()
         try:
+            node.wait_ready()  # one-shot mode: block until DDS discovery is done
             getattr(node, args[0])(*args[1:])
         finally:
             # Stop the executor and join BEFORE tearing the context down, or rclpy
