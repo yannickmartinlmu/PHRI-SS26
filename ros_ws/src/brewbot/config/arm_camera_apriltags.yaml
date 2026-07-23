@@ -1,0 +1,88 @@
+# AprilTag configuration for the Kinova arm-mounted color camera.
+# tag.ids, tag.frames and tag.sizes must have equal lengths.
+# tag_ids, tag_names and tag_frames must have equal lengths.
+# Arm-camera TF frame names must differ from the fixed-camera frame names.
+
+"/arm_camera/apriltag":
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    size: 0.060
+    max_hamming: 0
+    pose_estimation_method: pnp
+    profile: false
+
+    detector:
+      threads: 4
+      decimate: 1.0
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false
+
+    tag:
+      ids:
+        [
+          0, 1, 2, 3, 4,
+          5, 6, 7, 8, 9,
+          10, 11, 12, 13, 14,
+          15, 16, 17, 18, 19
+        ]
+
+      # These names are deliberately different from the fixed-camera frames tag_0, tag_1, etc. to prevent TF child-frame conflicts.
+      frames:
+        [
+          arm_tag_0, arm_tag_1, arm_tag_2, arm_tag_3, arm_tag_4,
+          arm_tag_5, arm_tag_6, arm_tag_7, arm_tag_8, arm_tag_9,
+          arm_tag_10, arm_tag_11, arm_tag_12, arm_tag_13, arm_tag_14,
+          arm_tag_15, arm_tag_16, arm_tag_17, arm_tag_18, arm_tag_19
+        ]
+
+      sizes:
+        [
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060
+        ]
+
+"/arm_camera/tag_tracker":
+  ros__parameters:
+    detections_topic: /arm_camera/detections
+    output_namespace: /brewbot/perception/arm_camera
+
+    # Empty for the first test: poses are published in camera_color_frame.
+    # Set to base_link only after TF base_link -> camera_color_frame works.
+    target_frame: ""
+
+    tag_ids:
+      [
+        0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9,
+        10, 11, 12, 13, 14,
+        15, 16, 17, 18, 19
+      ]
+
+    # namespace is /brewbot/perception/arm_camera rather than fixed_camera.
+    tag_names:
+      [
+        Ntag_0, Ntag_1, Ntag_2, Ntag_3, Ntag_4,
+        Ntag_5, Ntag_6, Ntag_7, Ntag_8, Ntag_9,
+        Ntag_10, Ntag_11, Ntag_12, Ntag_13, Ntag_14,
+        Ntag_15, Ntag_16, Ntag_17, Ntag_18, Ntag_19
+      ]
+
+    tag_frames:
+      [
+        arm_tag_0, arm_tag_1, arm_tag_2, arm_tag_3, arm_tag_4,
+        arm_tag_5, arm_tag_6, arm_tag_7, arm_tag_8, arm_tag_9,
+        arm_tag_10, arm_tag_11, arm_tag_12, arm_tag_13, arm_tag_14,
+        arm_tag_15, arm_tag_16, arm_tag_17, arm_tag_18, arm_tag_19
+      ]
+
+
+    minimum_decision_margin: 15.0
+    minimum_consecutive_detections: 1
+    maximum_detection_gap_sec: 2.0
+    lost_timeout_sec: 1.5
+    publish_rate_hz: 10.0

@@ -12,6 +12,19 @@
   <depend>moveit_msgs</depend>
   <depend>trajectory_msgs</depend>
 
+  <exec_depend>apriltag_msgs</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>azure_kinect_ros2_driver</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>image_proc</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>kinova_vision</exec_depend>
+
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

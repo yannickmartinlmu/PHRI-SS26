@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 package_name = 'brewbot'
@@ -10,6 +13,14 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (
+            os.path.join("share", package_name, "launch"),
+            glob("launch/*.launch.py"),
+        ),
+        (
+            os.path.join("share", package_name, "config"),
+            glob("config/*.yaml"),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -33,7 +44,11 @@ setup(
             'tts = brewbot.tts:main',
             'state_estimator = brewbot.state_estimator:main',
             'arm_controller = brewbot.arm_controller:main',
-            'elmo_sim = brewbot.elmo_sim:main'
+            'elmo_sim = brewbot.elmo_sim:main',
+            (
+                "fixed_camera_tag_tracker = "
+                "brewbot.fixed_camera_tag_tracker:main"
+            ),
         ],
     },
 )
