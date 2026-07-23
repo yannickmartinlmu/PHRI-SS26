@@ -404,6 +404,8 @@ class ArmController(Node):
         self.move_arm(f"fill_{drink}")
 
     def handover(self):
+        self.move_rail(RAIL_HANDOVER)
+        self.move_lift(LIFT_HOME)
         self.move_arm("handover"); 
         self.move_lift(LIFT_HANDOVER)
         self.open_gripper()
