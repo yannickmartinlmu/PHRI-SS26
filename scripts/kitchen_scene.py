@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""Lab kitchen -> MoveIt collision boxes, published in base_link.
+"""Lab kitchen -> MoveIt collision boxes, published in the fixed 'lab' frame.
 
-Frame model (agreed with the measurements):
-  world := base_link at HOME (carriage=0.85, lift=0.35), axes PARALLEL to base_link.
+Frame model:
+  lab := where base_link would sit at Elmo (carriage=0, lift=0) — unreachable, and
+  that's fine: a frame is a label. Axes PARALLEL to base_link (it never rotates
+  on the rail):
     +X = arm-left, along the rail   (carriage UP moves the arm -X, i.e. to its right)
     +Y = toward the back wall
     +Z = DOWN toward the floor       (ceiling-mounted arm; "up" = -z)
-  base_link never rotates on the rail (pure prismatic X + Z), so a static object at
-  world point P maps into base_link by SUBTRACTION only:
-      P_base_link = P - origin(carriage, lift)
-  MoveIt caches the scene in the planning frame and does NOT re-transform it as
-  base_link rides the rail, so re-apply this after EVERY Elmo move (and at startup).
-  See the rail-carriage-workflow / elmo-axis-mapping notes.
+  base_link origin in lab = (-carriage, 0, +lift) — the raw Elmo readings.
+  NOT named "world": that frame is the URDF ROOT (fixed identity to base_link),
+  so we anchor ABOVE it: TF is lab->world (one parent per child in tf2).
+
+  Boxes are CONSTANTS in lab. Whoever sends them must broadcast the fresh
+  lab->world static TF FIRST — move_group bakes objects into the planning
+  frame at receive time and never re-transforms them, so re-send the scene after
+  EVERY Elmo move (and at startup). See rail-carriage-workflow notes.
 
 Usage:
-  python3 scripts/kitchen_scene.py [carriage] [lift]   # apply scene (default = home)
+  python3 scripts/kitchen_scene.py [carriage] [lift]   # broadcast TF + apply scene
   python3 scripts/kitchen_scene.py check               # math self-check, no ROS needed
 """
 
 import sys
 
 # ----- calibration knobs: measure-once. Tweak here; everything downstream follows. -----
-HOME_CARRIAGE, HOME_LIFT = 0.85, 0.35
-WALL_Y  = 0.49                # base centre -> back wall
-FLOOR_Z = 2.006               # base_link -> floor at home (interp of min/max heights)
+FRAME = "lab"                          # NOT "world" — that name lives in the Kinova SRDF
+MEAS_CARRIAGE, MEAS_LIFT = 0.85, 0.35  # base_link pose when the kitchen was measured
+WALL_Y  = 0.49                # base centre -> back wall (at the MEAS pose)
+FLOOR_Z = 2.006               # base_link -> floor at the MEAS pose (interp of min/max)
 
 CEIL_Z    = FLOOR_Z - 3.0              # 3 m ceiling assumed (296 was room WIDTH, not height)
 COUNTER_H = 0.91
@@ -73,7 +78,8 @@ Y_LAMP = (WALL_Y - LAMP, WALL_Y)
 
 
 def scene():
-    """(name, xrange, yrange, zrange) in world metres. Ranges are (min, max)."""
+    """(name, xrange, yrange, zrange) in MEASURED metres (frame of the MEAS pose).
+    Ranges are (min, max); _center_size shifts them into lab."""
     b = []
     # cooktop peninsula (solid)
     b.append(("cooktop", X_COOK, Y_COOK, Z_CAB))
@@ -98,25 +104,29 @@ def scene():
     return b
 
 
-def origin(carriage, lift):
-    """base_link origin expressed in world = how far base_link has moved off home."""
-    dx = -(carriage - HOME_CARRIAGE)   # carriage UP -> arm -X
-    dz = (lift - HOME_LIFT)            # lift UP(value) -> arm down -> +Z
-    return (dx, 0.0, dz)
+def base_link_in_lab(carriage, lift):
+    """base_link origin in lab. THE one math line — arm_controller imports it too."""
+    return (-carriage, 0.0, lift)      # carriage UP -> -X; lift UP(value) -> +Z (down)
 
 
-def _center_size(xr, yr, zr, o):
-    """World box bounds -> (centre in base_link, full size). base_link = world - origin."""
+_SHIFT = base_link_in_lab(MEAS_CARRIAGE, MEAS_LIFT)   # measured frame -> lab frame
+
+
+def _center_size(xr, yr, zr):
+    """Measured box bounds -> (centre in lab, full size). lab = measured + _SHIFT."""
     assert xr[1] > xr[0] and yr[1] > yr[0] and zr[1] > zr[0], "box has non-positive size"
-    c = ((xr[0] + xr[1]) / 2 - o[0], (yr[0] + yr[1]) / 2 - o[1], (zr[0] + zr[1]) / 2 - o[2])
+    c = ((xr[0] + xr[1]) / 2 + _SHIFT[0], (yr[0] + yr[1]) / 2 + _SHIFT[1],
+         (zr[0] + zr[1]) / 2 + _SHIFT[2])
     s = (xr[1] - xr[0], yr[1] - yr[0], zr[1] - zr[0])
     return c, s
 
 
 # ---------------------------------------------------------------------------- ROS ----
 
-def build_scene(carriage, lift):
-    """CollisionObjects for the kitchen at this carriage/lift, in base_link frame.
+def build_scene():
+    """CollisionObjects for the kitchen, in the fixed lab frame — constants, but
+    move_group bakes them against the CURRENT lab->base_link TF at receive time,
+    so broadcast the fresh TF first and re-send after every Elmo move.
 
     Pure message-building (no rclpy) so a running node — e.g. arm_controller — can
     reuse it and publish on its own /apply_planning_scene client after each rail move.
@@ -125,12 +135,11 @@ def build_scene(carriage, lift):
     from shape_msgs.msg import SolidPrimitive
     from geometry_msgs.msg import Pose
 
-    o = origin(carriage, lift)
     objs = []
     for name, xr, yr, zr in scene():
-        c, s = _center_size(xr, yr, zr, o)
+        c, s = _center_size(xr, yr, zr)
         co = CollisionObject()
-        co.header.frame_id = "base_link"
+        co.header.frame_id = FRAME
         co.id = name
         co.pose.orientation.w = 1.0
         prim_pose = Pose()
@@ -143,19 +152,46 @@ def build_scene(carriage, lift):
     return objs
 
 
+def make_anchor_tf(carriage, lift, stamp):
+    """lab->world TransformStamped — shared by arm_controller and the CLI, so
+    there is exactly one place a sign flip could hide.
+
+    Child is 'world', NOT base_link: the URDF root is world with a fixed identity
+    joint to base_link, and tf2 allows one parent per child — anchoring base_link
+    directly would steal it from world and orphan the model tree. world == base_link
+    (identity), so the numbers are unchanged."""
+    from geometry_msgs.msg import TransformStamped
+
+    t = TransformStamped()
+    t.header.stamp = stamp
+    t.header.frame_id = FRAME
+    t.child_frame_id = "world"
+    x, y, z = base_link_in_lab(carriage, lift)
+    t.transform.translation.x = x
+    t.transform.translation.y = y
+    t.transform.translation.z = z
+    t.transform.rotation.w = 1.0
+    return t
+
+
 def apply_scene(carriage, lift):
+    import time
     import rclpy
+    from tf2_ros import StaticTransformBroadcaster
     from moveit_msgs.srv import ApplyPlanningScene
     from moveit_msgs.msg import PlanningScene
 
     rclpy.init()
     node = rclpy.create_node("kitchen_scene")
+    br = StaticTransformBroadcaster(node)
+    br.sendTransform(make_anchor_tf(carriage, lift, node.get_clock().now().to_msg()))
     client = node.create_client(ApplyPlanningScene, "/apply_planning_scene")
     node.get_logger().info("waiting for /apply_planning_scene ...")
     client.wait_for_service()
+    time.sleep(0.2)  # ponytail: TF must land before boxes bake; raise if ever stale
 
     ps = PlanningScene(is_diff=True)
-    ps.world.collision_objects = build_scene(carriage, lift)
+    ps.world.collision_objects = build_scene()
 
     fut = client.call_async(ApplyPlanningScene.Request(scene=ps))
     rclpy.spin_until_future_complete(node, fut)
@@ -168,15 +204,15 @@ def apply_scene(carriage, lift):
 # -------------------------------------------------------------------------- check ----
 
 def demo():
-    # shift math -- the only non-trivial logic; a sign flip here wrecks the whole scene.
-    assert origin(0.85, 0.35) == (0.0, 0.0, 0.0)
-    assert abs(origin(0.95, 0.35)[0] - (-0.10)) < 1e-9        # carriage +0.1 -> arm -X
-    assert abs(origin(0.75, 0.35)[0] - (+0.10)) < 1e-9        # carriage -0.1 -> arm +X
-    assert abs(origin(0.85, 0.45)[2] - 0.10) < 1e-9           # lift +0.1 -> arm down +Z (1:1)
+    # anchor math -- the only non-trivial logic; a sign flip wrecks scene AND TF.
+    assert base_link_in_lab(0.85, 0.35) == (-0.85, 0.0, 0.35)
+    assert abs(base_link_in_lab(0.95, 0.35)[0] - (-0.95)) < 1e-9  # carriage +0.1 -> -X
+    assert abs(base_link_in_lab(0.85, 0.45)[2] - 0.45) < 1e-9     # lift +0.1 -> +Z (down)
 
-    # at home the scene sits in world coords unchanged (origin is zero)
-    c, s = _center_size(X_COOK, Y_COOK, Z_CAB, origin(HOME_CARRIAGE, HOME_LIFT))
-    assert abs(c[0] - (X_NEAR + COOK_W / 2)) < 1e-9
+    # boxes land in lab shifted by exactly the MEAS anchor
+    c, s = _center_size(X_COOK, Y_COOK, Z_CAB)
+    assert abs(c[0] - (X_NEAR + COOK_W / 2 - MEAS_CARRIAGE)) < 1e-9
+    assert abs(c[2] - ((Z_CAB[0] + Z_CAB[1]) / 2 + MEAS_LIFT)) < 1e-9
     assert abs(s[2] - COUNTER_H) < 1e-9
 
     # bowl sits 36 corner / 50 wide / 38 far end within the 124 counter (trips on an INSET slip)
@@ -191,17 +227,17 @@ def demo():
 
     # every box has positive size (also asserted per-box in _center_size)
     for name, xr, yr, zr in scene():
-        _center_size(xr, yr, zr, (0, 0, 0))
+        _center_size(xr, yr, zr)
 
-    print(f"check OK -- {len(scene())} boxes, shift math and sink void verified")
+    print(f"check OK -- {len(scene())} boxes, anchor math and sink void verified")
 
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "check":
         demo()
         return
-    carriage = float(sys.argv[1]) if len(sys.argv) > 1 else HOME_CARRIAGE
-    lift = float(sys.argv[2]) if len(sys.argv) > 2 else HOME_LIFT
+    carriage = float(sys.argv[1]) if len(sys.argv) > 1 else MEAS_CARRIAGE
+    lift = float(sys.argv[2]) if len(sys.argv) > 2 else MEAS_LIFT
     apply_scene(carriage, lift)
 
 

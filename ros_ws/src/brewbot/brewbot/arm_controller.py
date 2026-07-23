@@ -35,6 +35,7 @@ from moveit_msgs.msg import Constraints, JointConstraint, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene, GetStateValidity
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
+from tf2_ros import StaticTransformBroadcaster
 from brewbot_interfaces.action import BringDrink
 
 # Kitchen collision scene lives in scripts/kitchen_scene.py (single source of truth,
@@ -45,9 +46,9 @@ _SCRIPTS = os.path.normpath(os.path.join(
 try:
     if _SCRIPTS not in sys.path:
         sys.path.insert(0, _SCRIPTS)
-    from kitchen_scene import build_scene
+    from kitchen_scene import build_scene, make_anchor_tf
 except ImportError:
-    build_scene = None
+    build_scene = make_anchor_tf = None
 
 # Elmo setpoints (Float32). carriage = base_link -X, lift = Z. See elmo-axis-mapping.
 # Both axes speak the identical topic pair, so one primitive drives them both.
@@ -60,7 +61,7 @@ RAIL_KITCHEN = -0.6       # drink-filling station
 RAIL_HANDOVER = 1.1       # handover position
 
 # Lift height targets
-LIFT_HOME = 0.35      # same default as elmo sim
+LIFT_HOME = 0.35      # travel waypoint only — the frame anchor lives in kitchen_scene
 LIFT_PICK_GLASS = 0.57
 LIFT_HANDOVER = 0.43
 LIFT_MIN = 0.235
@@ -159,9 +160,11 @@ class ArmController(Node):
             goal_callback=self._on_goal, callback_group=cb
         )
 
-        # Kitchen collision scene: re-publish after every Elmo move + seed once at startup.
-        # base_link rides the rail and MoveIt won't re-transform a cached scene. Best-effort.
+        # Kitchen collision scene: boxes are constants in the fixed 'lab' frame; we
+        # broadcast lab->base_link from Elmo feedback and re-send the boxes after every
+        # Elmo move (move_group bakes them at receive time, it won't re-transform).
         if build_scene is not None:
+            self._tf_broadcaster = StaticTransformBroadcaster(self)
             self._scene_client = self.create_client(
                 ApplyPlanningScene, "/apply_planning_scene", callback_group=cb)
             self._validity_client = self.create_client(
@@ -209,20 +212,32 @@ class ArmController(Node):
             self._scene_timer.cancel()
             self._publish_scene()
 
-    def _publish_scene(self):
-        # Re-cache the kitchen boxes for wherever the rail is NOW. Best-effort: a scene
-        # failure logs and returns — it must never abort a drink. See project-kitchen-scene.
+    def _broadcast_anchor(self, carriage, lift):
+        # lab->world from Elmo readings (world = URDF root, identity to base_link).
+        # Static TF is latched; re-sending replaces the old value in every listener's
+        # buffer. We are the ONLY writer of this pair.
+        self._tf_broadcaster.sendTransform(
+            make_anchor_tf(carriage, lift, self.get_clock().now().to_msg()))
+
+    def _publish_scene(self, lift=None):
+        # Broadcast lab->base_link, then re-send the (constant) kitchen boxes so
+        # move_group re-bakes them against the fresh TF. `lift` override = the virtual
+        # sweep in _lift_path_clear lying about height; None = where Elmo really is.
+        # Best-effort: a scene failure logs and returns — it must never abort a drink.
         if build_scene is None:
             return
-        carriage, lift = self._elmo_pos["carriage"], self._elmo_pos["lift"]
+        carriage = self._elmo_pos["carriage"]
+        lift = lift if lift is not None else self._elmo_pos["lift"]
         if carriage is None or lift is None:
             self.get_logger().warn(f"[scene] no Elmo feedback yet — skipped")
             return
         if not self._scene_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warn("[scene] /apply_planning_scene unavailable — skipped")
             return
+        self._broadcast_anchor(carriage, lift)
+        time.sleep(0.2)  # ponytail: TF must land before boxes bake; raise if ever stale
         ps = PlanningScene(is_diff=True)
-        ps.world.collision_objects = build_scene(carriage, lift)
+        ps.world.collision_objects = build_scene()
         result = self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
         ok = result is not None and result.success
         self.get_logger().info(f"[scene] {len(ps.world.collision_objects)} boxes @ "
@@ -291,6 +306,7 @@ class ArmController(Node):
 
     def _gripper(self, target_pos):
         self.get_logger().info(f"[gripper] -> {target_pos}")
+        return
         goal = GripperCommand.Goal()
         goal.command.position = float(target_pos)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
@@ -339,12 +355,15 @@ class ArmController(Node):
         self._move_elmo("lift", target_lift_position)
 
     def _lift_path_clear(self, target):
-        # Elmo isn't a MoveIt joint, so MoveIt can't plan the lift. Instead: freeze the arm,
-        # virtually move the kitchen boxes to each height the arm sweeps through, and ask
-        # /check_state_validity if the current arm state collides. is_diff=True + empty state
-        # means "the arm where it is right now". /apply_planning_scene is a service (synchronous
-        # apply), so the scene is live before each check. Dynamic obstacles enter the same scene
-        # and get checked for free. FAIL-OPEN: if the check can't run, warn loudly and allow.
+        # Elmo isn't a MoveIt joint, so MoveIt can't plan the lift. Instead: freeze the arm
+        # and virtually ride base_link through each height by LYING on the lab anchor TF —
+        # _publish_scene(lift=h) re-bakes the constant boxes against the fake anchor — then
+        # ask /check_state_validity if the current arm state collides. is_diff=True + empty
+        # state means "the arm where it is right now". /apply_planning_scene is a service
+        # (synchronous apply), so the scene is live before each check. Dynamic obstacles
+        # enter the same scene and get checked for free. RViz flickers during the sweep;
+        # the final _publish_scene() restores TF + scene to reality.
+        # FAIL-OPEN: if the check can't run, warn loudly and allow.
         current, carriage = self._elmo_pos["lift"], self._elmo_pos["carriage"]
         if build_scene is None or current is None or carriage is None:
             self.get_logger().warn("[lift-check] no scene/feedback — SKIPPING collision check")
@@ -364,9 +383,7 @@ class ArmController(Node):
 
         clear = True
         for lift in heights:
-            ps = PlanningScene(is_diff=True)
-            ps.world.collision_objects = build_scene(carriage, lift)
-            self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
+            self._publish_scene(lift=lift)
             req = GetStateValidity.Request()
             req.robot_state.is_diff = True  # empty state + is_diff = current monitored arm
             req.group_name = MOVE_GROUP
@@ -376,7 +393,7 @@ class ArmController(Node):
                 clear = False
                 break
 
-        self._publish_scene()  # restore the scene to where the arm actually is
+        self._publish_scene()  # restore TF + scene to where the arm actually is
         return clear
 
     def open_gripper(self):
@@ -469,6 +486,7 @@ def main():
         spin_thread.start()
         try:
             node.wait_ready()  # one-shot mode: block until DDS discovery is done
+            node.get_logger().info(f"[cli] {args[0]}({', '.join(args[1:])})")
             getattr(node, args[0])(*args[1:])
         finally:
             # Stop the executor and join BEFORE tearing the context down, or rclpy
