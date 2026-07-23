@@ -305,6 +305,11 @@ class ArmController(Node):
             raise RuntimeError(f"MoveIt planning failed: error_code={result.error_code.val}")
 
     def _gripper(self, target_pos):
+        # Sim does not have a working gripper. Do a check, then skip. 
+        if not self._gripper_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn(
+                f"[gripper] no action server — skipping -> {target_pos} (sim?)")
+            return
         self.get_logger().info(f"[gripper] -> {target_pos}")
         return
         goal = GripperCommand.Goal()
@@ -416,6 +421,8 @@ class ArmController(Node):
         self.move_arm(f"fill_{drink}")
 
     def handover(self):
+        self.move_rail(RAIL_HANDOVER)
+        self.move_lift(LIFT_HOME)
         self.move_arm("handover"); 
         self.move_lift(LIFT_HANDOVER)
         self.open_gripper()
