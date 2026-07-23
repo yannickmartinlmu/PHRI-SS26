@@ -311,7 +311,6 @@ class ArmController(Node):
                 f"[gripper] no action server — skipping -> {target_pos} (sim?)")
             return
         self.get_logger().info(f"[gripper] -> {target_pos}")
-        return
         goal = GripperCommand.Goal()
         goal.command.position = float(target_pos)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
