@@ -84,11 +84,11 @@ EE_LINK = "end_effector_link"
 # (the unreachable rail zero), axes parallel to base_link. Elmo feedback is metres 1:1
 # (see elmo-axis-mapping), so E->base_link is pure translation and the carriage nulls X.
 RAIL_MIN, RAIL_MAX = -0.6, 1.1      # ponytail: physical rail travel; widen if it reaches further
-GRIPPER_DOWN_QUAT = (0.0, 0.0, 0.0, 1.0)   # top-down approach orientation
-# ponytail: verify — jog arm to point straight down, `tf2_echo base_link end_effector_link`
+GRIPPER_HORIZ_QUAT = (0.5, -0.5, 0.5, -0.5)   # horizontal side grasp; proven as arm_teleop HORIZ
+# ponytail: verify — jog arm to a level side grasp, `tf2_echo base_link end_effector_link`
 POSE_POS_TOL = 0.01      # m; IK position window (sphere radius)
-POSE_LEVEL_TOL = 0.2     # rad; how far off top-down the wrist may tilt (pitch/roll)
-POSE_YAW_TOL = 3.15      # rad; ~free spin about vertical — the bottle is round
+POSE_LEVEL_TOL = 0.01     # rad; how far the wrist may tilt off level (pitch/roll)
+POSE_YAW_TOL = 3.15      # rad; ~free azimuth about vertical — round upright bottle, approach from any side
 
 JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
@@ -332,12 +332,12 @@ class ArmController(Node):
 
     def _move_arm_pose(self, x, y, z):
         # The ONE place Cartesian IK lives. MoveIt only — FK has no IK. Position: a small
-        # sphere at (x,y,z) in base_link. Orientation: gripper top-down (approach the bottle
-        # from above), yaw ~free about the vertical because the bottle is round. Mirrors the
-        # proven message shape in scripts/arm_teleop.py make_goal().
+        # sphere at (x,y,z) in base_link. Orientation: gripper horizontal (side grasp, fingers
+        # close level around the upright bottle), approach azimuth ~free because the bottle is
+        # round. Mirrors the proven message shape in scripts/arm_teleop.py make_goal().
         if not self.use_moveit:
             raise RuntimeError("_move_arm_pose needs use_moveit:=true (FK has no IK)")
-        self.get_logger().info(f"[arm] -> pose ({x:.3f}, {y:.3f}, {z:.3f}) top-down")
+        self.get_logger().info(f"[arm] -> pose ({x:.3f}, {y:.3f}, {z:.3f}) horizontal")
         region = Pose()
         region.position.x, region.position.y, region.position.z = float(x), float(y), float(z)
         region.orientation.w = 1.0
@@ -352,10 +352,12 @@ class ArmController(Node):
         oc.header.frame_id = "base_link"
         oc.link_name = EE_LINK
         (oc.orientation.x, oc.orientation.y,
-         oc.orientation.z, oc.orientation.w) = GRIPPER_DOWN_QUAT
+         oc.orientation.z, oc.orientation.w) = GRIPPER_HORIZ_QUAT
+        # ponytail: HORIZ_QUAT maps EE y -> base vertical (math, not measured), so the free
+        # azimuth rides the Y tolerance. Wrong tilt in a test? swap which axis gets POSE_YAW_TOL.
         oc.absolute_x_axis_tolerance = POSE_LEVEL_TOL
-        oc.absolute_y_axis_tolerance = POSE_LEVEL_TOL
-        oc.absolute_z_axis_tolerance = POSE_YAW_TOL
+        oc.absolute_y_axis_tolerance = POSE_YAW_TOL
+        oc.absolute_z_axis_tolerance = POSE_LEVEL_TOL
         oc.weight = 1.0
         goal = MoveGroup.Goal()
         req = goal.request
@@ -366,6 +368,11 @@ class ArmController(Node):
         req.max_acceleration_scaling_factor = 0.3
         req.goal_constraints.append(
             Constraints(position_constraints=[pc], orientation_constraints=[oc]))
+        # Hold the SAME level orientation for the whole path so a held glass never tips.
+        # ponytail: the arm must ALREADY be level at the start or constrained planning fails
+        # instantly — call this only from a level pose. Constrained planning is slower; the
+        # 10s / 16 attempts above is the budget, bump it if this starts timing out.
+        # req.path_constraints = Constraints(orientation_constraints=[oc])
         goal.planning_options.plan_only = False
         result = self._send(self._moveit_client, goal)
         if result.error_code.val != 1:
@@ -427,7 +434,7 @@ class ArmController(Node):
 
     def move_to_point(self, px, py, pz):
         # Reach a point in frame E (origin = carriage 0 / lift 0, the rail zero), gripper
-        # top-down. Carriage slides to null X (bounded = "closest"); lift is READ, not moved
+        # horizontal. Carriage slides to null X (bounded = "closest"); lift is READ, not moved
         # (grab by dropping the lift afterwards, as a separate skill); the arm IKs the rest.
         # CLI args arrive as strings -> float().
         px, py, pz = float(px), float(py), float(pz)
