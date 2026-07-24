@@ -31,8 +31,11 @@ from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Float32
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import Constraints, JointConstraint, PlanningScene
+from moveit_msgs.msg import (Constraints, JointConstraint, PlanningScene,
+                             PositionConstraint, OrientationConstraint, BoundingVolume)
 from moveit_msgs.srv import ApplyPlanningScene, GetStateValidity
+from shape_msgs.msg import SolidPrimitive
+from geometry_msgs.msg import Pose
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
@@ -75,6 +78,17 @@ ELMO_POLL = 0.1         # sec between feedback checks
 FK_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 MOVEIT_ACTION = "/move_action"
 MOVE_GROUP = "manipulator"
+EE_LINK = "end_effector_link"
+
+# Cartesian pose goals (move_to_point). Frame E = fixed, origin at carriage=0 / lift=0
+# (the unreachable rail zero), axes parallel to base_link. Elmo feedback is metres 1:1
+# (see elmo-axis-mapping), so E->base_link is pure translation and the carriage nulls X.
+RAIL_MIN, RAIL_MAX = -0.6, 1.1      # ponytail: physical rail travel; widen if it reaches further
+GRIPPER_DOWN_QUAT = (0.0, 0.0, 0.0, 1.0)   # top-down approach orientation
+# ponytail: verify — jog arm to point straight down, `tf2_echo base_link end_effector_link`
+POSE_POS_TOL = 0.01      # m; IK position window (sphere radius)
+POSE_LEVEL_TOL = 0.2     # rad; how far off top-down the wrist may tilt (pitch/roll)
+POSE_YAW_TOL = 3.15      # rad; ~free spin about vertical — the bottle is round
 
 JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
@@ -123,6 +137,33 @@ def _check_poses():
 
 
 _check_poses()
+
+
+def _closest_carriage(px):
+    # "Closest" carriage = the one that nulls the point's X, clamped to the rail. The
+    # sign is negative because the rail axis is inverted vs the arm (elmo-axis-mapping).
+    return max(RAIL_MIN, min(RAIL_MAX, -px))
+
+
+def _point_to_base(px, py, pz, carriage, lift):
+    # Frame E (origin carriage=0/lift=0) -> base_link. Pure translation, 1:1 metres. A
+    # clamped carriage leaves a nonzero X residual for the arm to stretch to.
+    return (px + carriage, py, pz - lift)
+
+
+def _check_transform():
+    # In-range point: carriage nulls X, so the arm's X residual is ~0.
+    c = _closest_carriage(0.3)
+    assert abs(c + 0.3) < 1e-9, c
+    x, y, z = _point_to_base(0.3, 0.5, 0.2, c, 0.35)
+    assert abs(x) < 1e-9 and y == 0.5 and abs(z - (0.2 - 0.35)) < 1e-9, (x, y, z)
+    # Clamp at both ends; a clamped point leaves the arm a nonzero X to reach.
+    assert _closest_carriage(-999) == RAIL_MAX
+    assert _closest_carriage(999) == RAIL_MIN
+    assert abs(_point_to_base(5.0, 0, 0, _closest_carriage(5.0), 0)[0]) > 1e-6
+
+
+_check_transform()
 
 
 class ArmController(Node):
@@ -289,6 +330,47 @@ class ArmController(Node):
         if result.error_code.val != 1:  # MoveItErrorCodes.SUCCESS
             raise RuntimeError(f"MoveIt planning failed: error_code={result.error_code.val}")
 
+    def _move_arm_pose(self, x, y, z):
+        # The ONE place Cartesian IK lives. MoveIt only — FK has no IK. Position: a small
+        # sphere at (x,y,z) in base_link. Orientation: gripper top-down (approach the bottle
+        # from above), yaw ~free about the vertical because the bottle is round. Mirrors the
+        # proven message shape in scripts/arm_teleop.py make_goal().
+        if not self.use_moveit:
+            raise RuntimeError("_move_arm_pose needs use_moveit:=true (FK has no IK)")
+        self.get_logger().info(f"[arm] -> pose ({x:.3f}, {y:.3f}, {z:.3f}) top-down")
+        region = Pose()
+        region.position.x, region.position.y, region.position.z = float(x), float(y), float(z)
+        region.orientation.w = 1.0
+        pc = PositionConstraint()
+        pc.header.frame_id = "base_link"
+        pc.link_name = EE_LINK
+        pc.constraint_region = BoundingVolume(
+            primitives=[SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[POSE_POS_TOL])],
+            primitive_poses=[region])
+        pc.weight = 1.0
+        oc = OrientationConstraint()
+        oc.header.frame_id = "base_link"
+        oc.link_name = EE_LINK
+        (oc.orientation.x, oc.orientation.y,
+         oc.orientation.z, oc.orientation.w) = GRIPPER_DOWN_QUAT
+        oc.absolute_x_axis_tolerance = POSE_LEVEL_TOL
+        oc.absolute_y_axis_tolerance = POSE_LEVEL_TOL
+        oc.absolute_z_axis_tolerance = POSE_YAW_TOL
+        oc.weight = 1.0
+        goal = MoveGroup.Goal()
+        req = goal.request
+        req.group_name = MOVE_GROUP
+        req.num_planning_attempts = 16
+        req.allowed_planning_time = 10.0
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
+        req.goal_constraints.append(
+            Constraints(position_constraints=[pc], orientation_constraints=[oc]))
+        goal.planning_options.plan_only = False
+        result = self._send(self._moveit_client, goal)
+        if result.error_code.val != 1:
+            raise RuntimeError(f"MoveIt pose planning failed: error_code={result.error_code.val}")
+
     def _gripper(self, target_pos):
         # Sim does not have a working gripper. Do a check, then skip. 
         if not self._gripper_client.wait_for_server(timeout_sec=5.0):
@@ -342,6 +424,19 @@ class ArmController(Node):
             raise RuntimeError(
                 f"lift path to {target_lift_position} blocked by collision — aborting")
         self._move_elmo("lift", target_lift_position)
+
+    def move_to_point(self, px, py, pz):
+        # Reach a point in frame E (origin = carriage 0 / lift 0, the rail zero), gripper
+        # top-down. Carriage slides to null X (bounded = "closest"); lift is READ, not moved
+        # (grab by dropping the lift afterwards, as a separate skill); the arm IKs the rest.
+        # CLI args arrive as strings -> float().
+        px, py, pz = float(px), float(py), float(pz)
+        carriage = _closest_carriage(px)
+        self.move_rail(carriage)              # tucks first, collision-safe
+        lift = self._elmo_pos["lift"]
+        if lift is None:
+            raise RuntimeError("no lift feedback — cannot place the point in base_link")
+        self._move_arm_pose(*_point_to_base(px, py, pz, carriage, lift))
 
     def _lift_path_clear(self, target):
         # Elmo isn't a MoveIt joint, so MoveIt can't plan the lift. Instead: freeze the arm,
