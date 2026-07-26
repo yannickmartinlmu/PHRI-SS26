@@ -57,25 +57,28 @@ Y_POST  = (Y_BOWL[1] - 0.05, Y_BOWL[1])
 Z_SPOUT = (TOP_Z - 0.29, TOP_Z - 0.24)              # 5cm band, 24..29 above worktop
 Y_SPOUT = (Y_BOWL[1] - 0.26, Y_BOWL[1])
 
-# coffee machine (Siemens EQ700) on the sink_ext nook: three boxes leaving the cup bay OPEN --
-# bulk behind it, drip tray below, spout/display head above.
-# Bay only. Angled flanks would need a rotated primitive_pose quaternion
+# coffee machine (Siemens EQ700): five boxes leaving the cup bay OPEN -- bulk behind it,
+# drip tray below, spout/display head above, and two shoulders for the notch's concave wall.
 COFFEE_W, COFFEE_D, COFFEE_H = 0.27, 0.44, 0.365  # KNOBS: front face, depth, height
-COFFEE_BAY_D  = 0.12       # front face -> concave back wall apex
+COFFEE_BAY_D  = 0.12       # front face -> concave back wall at its APEX (deepest, mid-width)
+COFFEE_BAY_DS = 0.09       # ... and at the flanks, where the wall bulges forward
 COFFEE_TRAY_H = 0.055      # drip tray top, above the worktop
 COFFEE_BAY_H  = 0.14       # clear height above the tray with the spout PARKED HIGH.
-COFFEE_TRAY_W = 0.21
+COFFEE_TRAY_W = 0.21       # tray + head are narrower than the body; the rest of the face is set back
+COFFEE_TRAY_X = 0.06       # tray starts at the left
+COFFEE_SHLD_W = 0.05       # KNOB: width of each shoulder -- see the ceiling note in _coffee()
 
 COFFEE_ROT90  = True       # True: the 44 depth runs along X, machine faces -X (as it sits today)
 COFFEE_X0, COFFEE_Y0 = X_SINK[1] - 0.27, Y_SINK[0]   # KNOBS: -X/-Y corner of the footprint
 
 
 def _coffee(rot):
-    """(bulk, tray, head, bay) as world (xrange, yrange, zrange) at this orientation.
+    """(bulk, tray, head, shoulderL, shoulderR, bay) world (xrange, yrange, zrange). Bay is LAST.
 
     Defined once in machine-local coords -- lx along the 27 face, ly from the FRONT face,
     lz up from the worktop -- then mapped out. `rot` is a true 90 deg turn, not an x/y
     dimension swap: a swap mirrors the machine and puts the cup bay on the wrong face.
+    Every part is axis-aligned in local coords, so the turn stays a coordinate map.
     """
     def box(lx, ly, lz):
         pts = []
@@ -85,11 +88,16 @@ def _coffee(rot):
         return tuple((min(p, q), max(p, q)) for p, q in zip(*pts))
 
     full, front = (0.0, COFFEE_W), (0.0, COFFEE_BAY_D)
+    tx0, tx1 = COFFEE_TRAY_X, COFFEE_TRAY_X + COFFEE_TRAY_W
+    tray_x, flank, tall = (tx0, tx1), (COFFEE_BAY_DS, COFFEE_BAY_D), (0.0, COFFEE_H)
     bay_top = COFFEE_TRAY_H + COFFEE_BAY_H
-    return (box(full, (COFFEE_BAY_D, COFFEE_D), (0.0, COFFEE_H)),   # bulk, behind the bay
-            box(full, front, (0.0, COFFEE_TRAY_H)),                 # drip tray, below
-            box(full, front, (bay_top, COFFEE_H)),                  # spout + display, above
-            box(full, front, (COFFEE_TRAY_H, bay_top)))             # the bay itself: OPEN
+    return (box(full,   (COFFEE_BAY_D, COFFEE_D), tall),            # bulk, behind the bay
+            box(tray_x, front, (0.0, COFFEE_TRAY_H)),               # drip tray, below
+            box(tray_x, front, (bay_top, COFFEE_H)),                # spout + display, above
+            box((tx0, tx0 + COFFEE_SHLD_W), flank, tall),           # shoulders: full height of  the notch
+            box((tx1 - COFFEE_SHLD_W, tx1), flank, tall), 
+            box((tx0 + COFFEE_SHLD_W, tx1 - COFFEE_SHLD_W), 
+                front, (COFFEE_TRAY_H, bay_top)))
 
 # desk: nearest (left) edge 98 to arm-right (-X); 120 wide, 70 deep, top at 105.
 DESK_TOP_H = 1.05
@@ -118,8 +126,8 @@ def scene():
     b.append(("sink_rimBk", X_BOWL,               (Y_BOWL[1], Y_SINK[1]), Z_RIM))  # wall side
     b.append(("sink_rimFr", X_BOWL,               (Y_SINK[0], Y_BOWL[0]), Z_RIM))  # room side
     b.append(("sink_ext",   (X_SINK[1], X_SINK[1] + 0.5), Y_SINK,         Z_RIM)) # cavity at the end
-    # coffee machine: three primitives sharing ONE id, so the gap between them stays open
-    for part in _coffee(COFFEE_ROT90)[:3]:
+    # coffee machine: every part but the bay, sharing ONE id so the gap between them stays open
+    for part in _coffee(COFFEE_ROT90)[:-1]:
         b.append(("coffee_machine",) + part)
     # faucet
     b.append(("faucet_post",  FX, Y_POST,  Z_POST))
@@ -236,12 +244,16 @@ def demo():
             assert not all(p[k][0] < cup[k] < p[k][1] for k in range(3)), \
                 f"coffee part {i} fills the cup bay (rot={rot})"
 
-    # machine stands ON the nook slab and its footprint stays on it
-    bulk, tray, head, _ = _coffee(COFFEE_ROT90)
+    # machine stands ON the worktop and no part of it escapes the body footprint
+    _, tray, head, *_ = _coffee(COFFEE_ROT90)
     assert abs(tray[2][1] - TOP_Z) < 1e-9, "machine floats above / sinks into the worktop"
-    for p in (bulk, tray, head):
-        assert X_SINK[1] <= p[0][0] and p[0][1] <= X_SINK[1] + 0.5, "machine hangs off the nook slab"
-        assert Y_SINK[0] <= p[1][0] and p[1][1] <= Y_SINK[1], "machine overhangs the counter depth"
+    parts = _coffee(COFFEE_ROT90)[:-1]                  # no part escapes the 27 x 44 x 36.5 body
+    span = [max(p[k][1] for p in parts) - min(p[k][0] for p in parts) for k in range(3)]
+    want = sorted([COFFEE_W, COFFEE_D]) + [COFFEE_H]
+    assert all(abs(a - b) < 1e-9 for a, b in zip(sorted(span[:2]) + span[2:], want)), \
+        f"coffee parts span {span}, not the body envelope"
+    assert abs((head[0][1] - head[0][0]) * (head[1][1] - head[1][0])
+               - COFFEE_TRAY_W * COFFEE_BAY_D) < 1e-9, "head is not TRAY_W x BAY_D"
 
     # every box has positive size (also asserted per-box in _center_size)
     for name, xr, yr, zr in scene():
