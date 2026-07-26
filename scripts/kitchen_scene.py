@@ -18,6 +18,7 @@ Usage:
   python3 scripts/kitchen_scene.py check               # math self-check, no ROS needed
 """
 
+import math
 import sys
 
 # ----- calibration knobs: measure-once. Tweak here; everything downstream follows. -----
@@ -144,6 +145,14 @@ def scene():
     return b
 
 
+def _tilt_quat(deg, axis="y"):
+    """Quaternion (x,y,z,w) for a rotation of `deg` about `axis` in {x,y,z}."""
+    half = math.radians(deg) / 2.0
+    q = {"x": 0.0, "y": 0.0, "z": 0.0, "w": math.cos(half)}
+    q[axis] = math.sin(half)
+    return (q["x"], q["y"], q["z"], q["w"])
+
+
 def origin(carriage, lift):
     """base_link origin expressed in world = how far base_link has moved off home."""
     dx = -(carriage - HOME_CARRIAGE)   # carriage UP -> arm -X
@@ -161,17 +170,23 @@ def _center_size(xr, yr, zr, o):
 
 # ---------------------------------------------------------------------------- ROS ----
 
-def build_scene(carriage, lift):
+def build_scene(carriage, lift, tilt_deg=0.0, tilt_axis="y"):
     """CollisionObjects for the kitchen at this carriage/lift, in base_link frame.
 
     Pure message-building (no rclpy) so a running node — e.g. arm_controller — can
     reuse it and publish on its own /apply_planning_scene client after each rail move.
+
+    `tilt_deg` = base_link's physical sag about `tilt_axis` (torque-dependent, see
+    project-tilt-compensation). The fixed kitchen seen from the tilted base_link is
+    rotated by the INVERSE, so MoveIt's level-FK collision check matches reality. The
+    header pose rotates every primitive of a box about the base_link origin at once.
     """
     from moveit_msgs.msg import CollisionObject
     from shape_msgs.msg import SolidPrimitive
     from geometry_msgs.msg import Pose
 
     o = origin(carriage, lift)
+    qx, qy, qz, qw = _tilt_quat(-tilt_deg, tilt_axis)
     objs = {}
     for name, xr, yr, zr in scene():                # boxes sharing a name -> one multi-part object
         c, s = _center_size(xr, yr, zr, o)
@@ -180,7 +195,10 @@ def build_scene(carriage, lift):
             co = objs[name] = CollisionObject()
             co.header.frame_id = "base_link"
             co.id = name
-            co.pose.orientation.w = 1.0
+            co.pose.orientation.x = qx
+            co.pose.orientation.y = qy
+            co.pose.orientation.z = qz
+            co.pose.orientation.w = qw
             co.operation = CollisionObject.ADD
         prim_pose = Pose()
         prim_pose.position.x, prim_pose.position.y, prim_pose.position.z = c
@@ -258,6 +276,12 @@ def demo():
     # every box has positive size (also asserted per-box in _center_size)
     for name, xr, yr, zr in scene():
         _center_size(xr, yr, zr, (0, 0, 0))
+
+    # tilt quaternion: 0 deg = identity; 90 about y = (0, sin45, 0, cos45). A sign/axis
+    # slip here silently mis-rotates the whole scene -> worse than no tilt.
+    assert _tilt_quat(0.0, "y") == (0.0, 0.0, 0.0, 1.0)
+    x, y, z, w = _tilt_quat(90.0, "y")
+    assert x == 0.0 and z == 0.0 and abs(y - 0.70710678) < 1e-6 and abs(w - 0.70710678) < 1e-6
 
     print(f"check OK -- {len(scene())} boxes, shift math, sink void and cup bay verified")
 

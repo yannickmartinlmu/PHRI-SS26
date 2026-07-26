@@ -71,6 +71,13 @@ LIFT_COLLISION_STEP = 0.05  # m; virtual sweep resolution for the lift safety ch
 # ponytail: tunneling knob — arm width catches thinner boxes, shrink if one slips through.
 
 
+# Base sags under load; the kitchen seen from the tilted base_link is rotated by -TILT,
+# which build_scene applies so MoveIt's level-FK collision check matches reality. One
+# measured number for now (jog to a worst-case left reach, tilt ~= tip_drop / reach);
+# swap in the live per-config C*tau model later. See project-tilt-compensation.
+TILT_DEG = 0.0     # 0 until measured; single constant, per-config model later
+TILT_AXIS = "y"    # sag plane: reach along X (rail) dips in Z
+
 ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
 ELMO_TIMEOUT = 30.0     # sec; raise rather than block the whole BringDrink goal
 ELMO_POLL = 0.1         # sec between feedback checks
@@ -263,7 +270,7 @@ class ArmController(Node):
             self.get_logger().warn("[scene] /apply_planning_scene unavailable — skipped")
             return
         ps = PlanningScene(is_diff=True)
-        ps.world.collision_objects = build_scene(carriage, lift)
+        ps.world.collision_objects = build_scene(carriage, lift, TILT_DEG, TILT_AXIS)
         result = self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
         ok = result is not None and result.success
         self.get_logger().info(f"[scene] {len(ps.world.collision_objects)} boxes @ "
@@ -472,7 +479,7 @@ class ArmController(Node):
         clear = True
         for lift in heights:
             ps = PlanningScene(is_diff=True)
-            ps.world.collision_objects = build_scene(carriage, lift)
+            ps.world.collision_objects = build_scene(carriage, lift, TILT_DEG, TILT_AXIS)
             self._scene_client.call(ApplyPlanningScene.Request(scene=ps))
             req = GetStateValidity.Request()
             req.robot_state.is_diff = True  # empty state + is_diff = current monitored arm
@@ -485,6 +492,28 @@ class ArmController(Node):
 
         self._publish_scene()  # restore the scene to where the arm actually is
         return clear
+
+    def test_tilt(self, deg, axis="x", parent="base_link"):
+        # POC: broadcast `<parent>_tilted`, rotated `deg` about `axis`, held live at 10 Hz
+        # so it shows in RViz. NOT the real fix — a lone triad, the arm does not follow it
+        # (arm is parented to base_link by robot_state_publisher). Proves the plumbing +
+        # lets you eyeball the angle. Ctrl-C to stop. See memory project_tilt_compensation.
+        import math
+        from tf2_ros import TransformBroadcaster
+        from geometry_msgs.msg import TransformStamped
+        br = TransformBroadcaster(self)
+        half = math.radians(float(deg)) / 2.0
+        t = TransformStamped()
+        t.header.frame_id = parent
+        t.child_frame_id = f"{parent}_tilted"
+        q = t.transform.rotation
+        setattr(q, axis, math.sin(half))   # axis in {x,y,z}
+        q.w = math.cos(half)
+        self.get_logger().info(f"[tilt-test] {parent} -> {parent}_tilted: {deg} deg about {axis}. Ctrl-C.")
+        while rclpy.ok():
+            t.header.stamp = self.get_clock().now().to_msg()
+            br.sendTransform(t)
+            time.sleep(0.1)
 
     def open_gripper(self):
         self._gripper(GRIPPER_OPEN)
