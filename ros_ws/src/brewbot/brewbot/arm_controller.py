@@ -17,6 +17,7 @@ way to an identical target:
     -p use_moveit:=false  FollowJointTrajectory         (dumb, direct, always works)
 """
 
+import math
 import os
 import sys
 import threading
@@ -27,6 +28,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from tf2_ros import Buffer, TransformListener
 
 from std_msgs.msg import Float32
 from control_msgs.action import FollowJointTrajectory, GripperCommand
@@ -77,6 +79,12 @@ LIFT_COLLISION_STEP = 0.05  # m; virtual sweep resolution for the lift safety ch
 # swap in the live per-config C*tau model later. See project-tilt-compensation.
 TILT_DEG = 0.0     # 0 until measured; single constant, per-config model later
 TILT_AXIS = "y"    # sag plane: reach along X (rail) dips in Z
+
+# Sag model (offline fit, NOT wired yet — feeds build_scene later once TILT_LINE is real).
+# Sag is a pitch about Y; torque about Y ~ weight * EE x-offset, so tilt is linear in x alone:
+# tilt(x) = a*x + c. The measured drop = tilt*x = a*x^2 + c*x (quadratic — why drop looked nonlinear).
+FLOOR_BELOW_BASE_HOME = 2.006  # m; floor depth under base_link at lift=LIFT_HOME (reference_lift_calibration)
+TILT_LINE = (0.0, 0.0)         # (a, c): tilt_rad = a*x + c. 0 until calibrate_tilt fills it.
 
 ELMO_TOLERANCE = 0.01   # units; "arrived" window — widen if the axis creeps forever
 ELMO_TIMEOUT = 30.0     # sec; raise rather than block the whole BringDrink goal
@@ -175,6 +183,36 @@ def _check_transform():
 _check_transform()
 
 
+def fit_tilt_line(rows):
+    # rows: (x, y, z, lift, measured_floor_height) tuples from measure() + a tape. Sag is a
+    # pitch about Y and the arm sits below the mount, so the Y offset makes no torque about Y
+    # and drops out. tilt(x) = a*x + c, and drop = tilt*x = a*x^2 + c*x. Fit on drop
+    # (well-conditioned), NOT drop/x (blows up near the forward pose where x ~= 0).
+    import numpy as np
+    A, drops = [], []
+    for x, y, z, lift, m in rows:
+        base_h = FLOOR_BELOW_BASE_HOME + (lift - LIFT_HOME)   # base_link height above floor
+        A.append([x * x, x])
+        drops.append((base_h + z) - m)                        # predicted tip floor-height - measured
+    (a, c), *_ = np.linalg.lstsq(np.array(A), np.array(drops), rcond=None)
+    return float(a), float(c)
+
+
+def _check_tilt_fit():
+    # Round-trip: synthesize drops from a known (a, c), confirm the fit recovers them.
+    a, c = 0.03, 0.005
+    rows = []
+    for x, z, lift in [(0.8, -0.6, 0.35), (0.4, -0.6, 0.35), (-0.7, -0.6, 0.35)]:
+        drop = a * x * x + c * x
+        m = (FLOOR_BELOW_BASE_HOME + (lift - LIFT_HOME) + z) - drop
+        rows.append((x, 0.0, z, lift, m))
+    fa, fc = fit_tilt_line(rows)
+    assert abs(fa - a) < 1e-9 and abs(fc - c) < 1e-9, (fa, fc)
+
+
+_check_tilt_fit()
+
+
 class ArmController(Node):
 
     def __init__(self):
@@ -220,6 +258,10 @@ class ArmController(Node):
         else:
             self.get_logger().warn(
                 f"kitchen_scene not importable from {_SCRIPTS} — collision scene disabled")
+
+        # Live TF for FK readback (measure). Pure rclpy — no numpy (dodges the numpy trap).
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self.get_logger().info("Arm controller ready")
 
@@ -516,6 +558,51 @@ class ArmController(Node):
             t.header.stamp = self.get_clock().now().to_msg()
             br.sendTransform(t)
             time.sleep(0.1)
+
+    def measure(self):
+        # FK of the EE in base_link RIGHT NOW, no motion. Call it in any pose you care about
+        # (full_extend, above_glass, ...) then tape the tip's floor-height -> one calibration
+        # tuple for the sag fit. This is the *nominal/level* FK (the sag lives above base_link,
+        # not in the joints), i.e. the predicted tip to diff against your measured one.
+        # Print x,y (plane offset) + z & lift (floor-height -> drop -> angle). See project-tilt-compensation.
+        from rclpy.time import Time
+        from rclpy.duration import Duration as RclDuration
+        tf = self._tf_buffer.lookup_transform(
+            "base_link", EE_LINK, Time(), timeout=RclDuration(seconds=2.0))
+        t = tf.transform.translation
+        lift = self._elmo_pos["lift"]
+        self.get_logger().info(
+            f"[measure] ee=({t.x:.4f}, {t.y:.4f}, {t.z:.4f}) lift={lift}  # tape tip floor-height now")
+        return (t.x, t.y, t.z, lift)
+
+    def move_and_measure(self, joint_1):
+        # Sweep only joint_1 across the fully-extended pose (= full_extend with a swept base),
+        # then measure. FK backend: direct + collision-bypassed on purpose — clear the
+        # workspace, this is a calibration reach, not a production move.
+        a = float(joint_1)
+        assert abs(a) <= JOINT_LIMITS[0], f"joint_1={a} exceeds +/-{JOINT_LIMITS[0]}"
+        self._move_arm_fk([a, -1.57, 0.0, 0.0, 0.0, 1.57])
+        return self.measure()
+
+    def calibrate_tilt(self, *rows):
+        # OFFLINE, run once with the measure() tuples. Each arg: "x,y,z,lift,measured".
+        # Prints (a, c) -> paste into TILT_LINE. Take a 4th, held-out pose to confirm: if the
+        # drop at a near-forward (x ~= 0) pose isn't ~0, a 2nd axis is leaking in. NOT WIRED yet.
+        parsed = [tuple(float(v) for v in r.split(",")) for r in rows]
+        a, c = fit_tilt_line(parsed)
+        self.get_logger().info(f"[calibrate] TILT_LINE = ({a:.5f}, {c:.5f}) from {len(rows)} rows")
+        return a, c
+
+    def _tilt_now(self):
+        # Live pitch (deg) about Y for the CURRENT pose, from the fitted TILT_LINE. Will feed
+        # build_scene (TILT_AXIS='y') at its two call sites once TILT_LINE is real. NOT WIRED yet.
+        from rclpy.time import Time
+        from rclpy.duration import Duration as RclDuration
+        tf = self._tf_buffer.lookup_transform(
+            "base_link", EE_LINK, Time(), timeout=RclDuration(seconds=2.0))
+        x = tf.transform.translation.x
+        a, c = TILT_LINE
+        return math.degrees(a * x + c)
 
     def open_gripper(self):
         self._gripper(GRIPPER_OPEN)
