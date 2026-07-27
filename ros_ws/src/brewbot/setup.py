@@ -21,6 +21,7 @@ setup(
             os.path.join("share", package_name, "config"),
             glob("config/*.yaml"),
         ),
+        (os.path.join('share', package_name, 'models'), glob('models/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -49,6 +50,7 @@ setup(
                 "fixed_camera_tag_tracker = "
                 "brewbot.fixed_camera_tag_tracker:main"
             ),
+            'arm_camera_gesture_recognizer = brewbot.arm_camera_gesture_recognizer:main',
         ],
     },
 )
