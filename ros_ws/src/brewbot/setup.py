@@ -41,6 +41,7 @@ setup(
             'web_ui = brewbot.web_ui:main',
             'nlp = brewbot.nlp:main',
             'sensor_hr = brewbot.sensor_hr:main',
+            'sensor_fakes = brewbot.sensor_fakes:main',
             'interaction_manager = brewbot.interaction_manager:main',
             'tts = brewbot.tts:main',
             'state_estimator = brewbot.state_estimator:main',
