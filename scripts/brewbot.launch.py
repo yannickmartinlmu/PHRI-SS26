@@ -11,4 +11,5 @@ def generate_launch_description():
         Node(package="brewbot", executable="sensor_hr",           name="sensor_hr"),
         Node(package="brewbot", executable="state_estimator",     name="state_estimator"),
         Node(package="brewbot", executable="interaction_manager", name="interaction_manager"),
+        Node(package="brewbot", executable="coffee_machine_actuator", name="coffee_machine_actuator"),
     ])

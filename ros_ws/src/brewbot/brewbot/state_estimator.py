@@ -26,13 +26,13 @@ def decide(hr, hrv, eda, temp, motion, base_hr, hrv_baseline):
     # 1. thermal axis — the only signals that actually sense temperature
     if temp is not None:
         if temp >= SKIN_TEMP_HOT:
-            return "hot", "cold water"
+            return "hot", "water"
         if temp <= SKIN_TEMP_COLD:
             return "cold", "hot chocolate"
 
     # 2. motion — arousal is from moving, not stress
     if motion is not None and motion >= MOTION_ACTIVE:
-        return "active", "cold water"
+        return "active", "water"
 
     # 3. arousal axis — high HR (HRV↓ / EDA↑ reinforce once tuned)
     if hr is not None and hr - base_hr >= HR_THRESHOLD:
@@ -148,10 +148,10 @@ class StateDeciderNode(Node):
 def demo():
     b = 70
     # thermal wins over everything, even a stress-level HR
-    assert decide(90, None, None, 36.0, None, b, None) == ("hot", "cold water")
+    assert decide(90, None, None, 36.0, None, b, None) == ("hot", "water")
     assert decide(50, None, None, 28.0, None, b, None) == ("cold", "hot chocolate")
     # motion beats arousal
-    assert decide(90, None, None, 33.0, 2.0, b, None) == ("active", "cold water")
+    assert decide(90, None, None, 33.0, 2.0, b, None) == ("active", "water")
     # arousal only when not hot/cold/moving
     assert decide(85, None, None, 33.0, 0.2, b, None) == ("stressed", "tea")
     # fatigue = HRV trend, needs a baseline; calm HR

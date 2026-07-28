@@ -47,6 +47,7 @@ setup(
             'tts = brewbot.tts:main',
             'state_estimator = brewbot.state_estimator:main',
             'arm_controller = brewbot.arm_controller:main',
+            'coffee_machine_actuator = brewbot.coffee_machine_actuator:main',
             'elmo_sim = brewbot.elmo_sim:main',
             (
                 "fixed_camera_tag_tracker = "
