@@ -1,0 +1,95 @@
+# AprilTag configuration for the third USB / RealSense camera.
+#
+# The camera itself is NOT started by the Brewbot launch files. Start it with:
+#   ros2 run realsense2_camera realsense2_camera_node
+#
+# IMPORTANT:
+# - Size is the AprilTag detection edge in metres, not the paper sheet.
+# - tag.ids, tag.frames and tag.sizes must have equal lengths.
+# - tag_ids, tag_names and tag_frames must have equal lengths.
+# - USB-camera TF frame names must differ from fixed- and arm-camera names.
+
+"/usb_camera/apriltag":
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    size: 0.060
+    max_hamming: 0
+    pose_estimation_method: pnp
+    profile: false
+
+    # Conservative settings because several vision pipelines may run together.
+    detector:
+      threads: 2
+      decimate: 2.0
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false
+
+    tag:
+      ids:
+        [
+          0, 1, 2, 3, 4,
+          5, 6, 7, 8, 9,
+          10, 11, 12, 13, 14,
+          15, 16, 17, 18, 19
+        ]
+
+      # Unique child-frame names avoid conflicts if several cameras see the
+      # same physical AprilTag at the same time.
+      frames:
+        [
+          usb_tag_0, usb_tag_1, usb_tag_2, usb_tag_3, usb_tag_4,
+          usb_tag_5, usb_tag_6, usb_tag_7, usb_tag_8, usb_tag_9,
+          usb_tag_10, usb_tag_11, usb_tag_12, usb_tag_13, usb_tag_14,
+          usb_tag_15, usb_tag_16, usb_tag_17, usb_tag_18, usb_tag_19
+        ]
+
+      sizes:
+        [
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060,
+          0.060, 0.060, 0.060, 0.060, 0.060
+        ]
+
+"/usb_camera/tag_tracker":
+  ros__parameters:
+    detections_topic: /usb_camera/detections
+    output_namespace: /brewbot/perception/usb_camera
+
+    # Empty means poses are published in the frame supplied by the camera.
+    # Set a world frame only after a valid TF connection has been calibrated.
+    target_frame: ""
+
+    tag_ids:
+      [
+        0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9,
+        10, 11, 12, 13, 14,
+        15, 16, 17, 18, 19
+      ]
+
+    tag_names:
+      [
+        Ntag_0, Ntag_1, Ntag_2, Ntag_3, Ntag_4,
+        Ntag_5, Ntag_6, Ntag_7, Ntag_8, Ntag_9,
+        Ntag_10, Ntag_11, Ntag_12, Ntag_13, Ntag_14,
+        Ntag_15, Ntag_16, Ntag_17, Ntag_18, Ntag_19
+      ]
+
+    tag_frames:
+      [
+        usb_tag_0, usb_tag_1, usb_tag_2, usb_tag_3, usb_tag_4,
+        usb_tag_5, usb_tag_6, usb_tag_7, usb_tag_8, usb_tag_9,
+        usb_tag_10, usb_tag_11, usb_tag_12, usb_tag_13, usb_tag_14,
+        usb_tag_15, usb_tag_16, usb_tag_17, usb_tag_18, usb_tag_19
+      ]
+
+    # Permissive debug values. Tighten before using a pose for robot motion.
+    minimum_decision_margin: 15.0
+    minimum_consecutive_detections: 1 #Wie oft ein Tag hintereinander erkannt werden muss
+    maximum_detection_gap_sec: 2.0 #Maximal erlaubte Zeit zwischen aufeinanderfolgenden Detections
+    lost_timeout_sec: 1.5 #Wie lange ein Tag nach der letzten Detection noch als sichtbar gilt
+    publish_rate_hz: 10.0 #Wie oft der Tracker seine Ausgaben veröffentlicht

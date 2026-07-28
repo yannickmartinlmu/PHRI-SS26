@@ -3,6 +3,10 @@
 
 #This launch file expects the previously arm_camera_apriltags.launch.py to be present in the brewbot package.
 
+#ros2 launch brewbot arm_camera_gestures.launch.py start_camera:=false
+#ros2 topic echo /brewbot/perception/arm_camera/gesture
+#ros2 topic echo /brewbot/perception/arm_camera/thumbs_up
+#ros2 topic echo /brewbot/perception/arm_camera/gesture_event
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -19,6 +23,14 @@ def generate_launch_description() -> LaunchDescription:
     max_color_pub_rate = LaunchConfiguration("max_color_pub_rate")
     image_topic = LaunchConfiguration("image_topic")
     camera_info_topic = LaunchConfiguration("camera_info_topic")
+
+    use_apriltag_rectification = LaunchConfiguration(
+        "use_apriltag_rectification"
+    )
+    rectified_image_topic = LaunchConfiguration(
+        "rectified_image_topic"
+    )
+
     target_frame = LaunchConfiguration("target_frame")
 
     camera = IncludeLaunchDescription(
@@ -54,7 +66,9 @@ def generate_launch_description() -> LaunchDescription:
             "start_camera": "false",
             "robot_ip": robot_ip,
             "startup_delay": "4.0",
-            "image_topic": image_topic,
+            "use_rectification": use_apriltag_rectification,
+            "raw_image_topic": image_topic,
+            "rectified_image_topic": rectified_image_topic,
             "camera_info_topic": camera_info_topic,
             "target_frame": target_frame,
         }.items(),
@@ -94,6 +108,17 @@ def generate_launch_description() -> LaunchDescription:
                 "camera_info_topic", default_value="/camera/color/camera_info"
             ),
             DeclareLaunchArgument("target_frame", default_value=""),
+            DeclareLaunchArgument(
+                "use_apriltag_rectification",
+                default_value="false",
+                description=(
+                "Rectify the RGB image before AprilTag detection."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "rectified_image_topic",
+                default_value="/arm_camera/image_rect",
+            ),
             camera,
             apriltags,
             gestures,

@@ -73,4 +73,4 @@
     minimum_consecutive_detections: 1
     maximum_detection_gap_sec: 2.0
     lost_timeout_sec: 1.5
-    publish_rate_hz: 10.0
+    publish_rate_hz: 5.0

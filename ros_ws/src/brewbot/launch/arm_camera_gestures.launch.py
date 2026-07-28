@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#Launch Kinova arm-camera gesture recognition
+#Launch Kinova arm-camera gesture recognition (apritag + gesture for the arm cam)
 
 from launch import LaunchDescription
 from launch.actions import (
