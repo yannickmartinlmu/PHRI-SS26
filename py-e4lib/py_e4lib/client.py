@@ -74,10 +74,20 @@ class E4Client:
             return
 
         print(f"Connecting to {self.address}...")
-        self._client = BleakClient(self.address)
+        self._client = BleakClient(self.address, disconnected_callback=self._on_disconnect)
         await self._client.connect()
         self._connected = True
-        print("Connected!")
+        print(f"Connected at {time.strftime('%H:%M:%S')}!")
+
+    def _on_disconnect(self, _client):
+        # RF link drops (0x08 supervision timeout) are inherent to the E4 on 2.4 GHz.
+        # Flip state so connect() will actually re-run instead of early-returning.
+        self._connected = False
+        print(f"!! BLE disconnected at {time.strftime('%H:%M:%S')}")
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     async def disconnect(self):
         """Disconnect from the E4 device."""
