@@ -41,6 +41,7 @@ from geometry_msgs.msg import Pose
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
+from brewbot_interfaces.srv import AskForWater
 
 # Kitchen collision scene lives in scripts/kitchen_scene.py (single source of truth,
 # user-edited). Import it by path; --symlink-install makes realpath resolve to the real
@@ -61,6 +62,10 @@ ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 COFFEE_DISPENSE_TOPIC = "/coffee_machine/dispense_request"
+
+# Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
+# dead transcriber parks the arm at the sink for a minute, not forever.
+WATER_CONFIRM_TIMEOUT = 60.0
 
 # Rail carriage targets. Positions assumed
 RAIL_KITCHEN = -0.6       # drink-filling station
@@ -248,6 +253,9 @@ class ArmController(Node):
 
         self._gripper_client = ActionClient(
             self, GripperCommand, GRIPPER_ACTION, callback_group=cb)
+
+        self._water_client = self.create_client(
+            AskForWater, "/ask_for_water", callback_group=cb)
 
         self._busy = False
         self._server = ActionServer(
@@ -453,6 +461,20 @@ class ArmController(Node):
         if not (result.reached_goal or result.stalled):
             raise RuntimeError(f"gripper stuck at {result.position}")
 
+    def _ask_for_water(self):
+        # Hold the pose under the tap while interaction_manager talks to the user.
+        # Blocking is fine: another thread spins, same as the action clients.
+        # FAIL-OPEN — no dialog stack (sim, ASR down) must not make water goals
+        # impossible; the caller hands over an empty glass rather than wedging.
+        if not self._water_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn("[water] /ask_for_water unavailable — skipping the prompt")
+            return False
+        result = self._water_client.call(
+            AskForWater.Request(timeout=WATER_CONFIRM_TIMEOUT))
+        confirmed = result is not None and result.confirmed
+        self.get_logger().info(f"[water] confirmed={confirmed}")
+        return confirmed
+
     def _move_elmo(self, axis, target_position):
         # float(): skills reach here from the CLI, where every arg is still a string.
         target = float(target_position)
@@ -652,6 +674,10 @@ class ArmController(Node):
     def bring_water_simple(self):
         self.pick_glass()
         self.fill("water")
+        # Not inside fill(): the coffee route visits no sink. Result deliberately
+        # unused — an unanswered prompt hands the glass back empty (recoverable)
+        # instead of aborting with the glass still held at the tap.
+        self._ask_for_water()
         self.handover()
 
     def bring_coffee_machine_drink_simple(self, drink):

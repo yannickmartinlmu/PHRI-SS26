@@ -1,0 +1,6 @@
+# Ask the user to fill the glass the arm is holding under the tap, then wait for
+# them to say they are done. The sentence lives in interaction_manager (it owns
+# what the robot says); the caller only sets how long this may block.
+float32 timeout
+---
+bool confirmed   # false = declined, or nobody answered before the timeout

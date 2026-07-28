@@ -11,6 +11,7 @@ from std_msgs.msg import Int32
 
 ADDRESS = "38:F9:F5:2C:74:C9"
 HR_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
+RECONNECT_DELAY = 5.0  # s; BLE supervision-timeout drops are routine, not errors
 
 
 class HeartrateNode(Node):
@@ -38,10 +39,18 @@ class HeartrateNode(Node):
         asyncio.run(self._ble_task())
 
     async def _ble_task(self):
-        async with BleakClient(ADDRESS) as client:
-            await client.start_notify(HR_CHAR, self._hr_callback)
-            while rclpy.ok():
-                await asyncio.sleep(1)
+        while rclpy.ok():
+            try:
+                async with BleakClient(ADDRESS) as client:
+                    await client.start_notify(HR_CHAR, self._hr_callback)
+                    self.get_logger().info("Heartrate sensor connected")
+                    while rclpy.ok() and client.is_connected:
+                        await asyncio.sleep(1)
+                self.get_logger().warn("Heartrate link lost")
+            except Exception as e:
+                self.get_logger().warn(f"Heartrate connection failed: {e}")
+            if rclpy.ok():
+                await asyncio.sleep(RECONNECT_DELAY)
 
 
 def main():

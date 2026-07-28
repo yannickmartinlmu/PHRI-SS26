@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-#Fake sensor publisher — no hardware, no bluetooth
+"""
+ Fake sensor publisher — no hardware, no bluetooth
+ If you want specific values sent forever, use:
+    ros2 topic pub -r1 /heartrate std_msgs/msg/Int32 "{data: 110}"
+    ros2 topic pub -r1 /skin_temp std_msgs/msg/Float32 "{data: 36.0}"
+"""
 import itertools
 import sys
 
