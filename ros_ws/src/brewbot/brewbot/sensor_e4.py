@@ -138,13 +138,20 @@ class E4SensorNode(Node):
 
         self._address = self.declare_parameter("address", "").value
 
+        # The BVP-derived HR below is the weakest number this node produces.
+        # Set false to let a dedicated HR sensor own /heartrate (see
+        # sensors.launch.py) — this also skips the 64 Hz BVP subscription
+        # entirely, not just the publish.
+        self._publish_hr = self.declare_parameter("publish_hr", True).value
+
         # ponytail: no /hrv publisher. RMSSD is defined on beat-to-beat
         # differences, and this signal can't give trustworthy individual beats
         # (see HeartRate) — RMSSD amplifies exactly that error, which is why it
         # read ~450 ms against a real 20–100. state_estimator latches the first
         # /hrv forever as its baseline, so a wrong number is worse than none.
         # Restore this if the BVP decode is ever fixed, not before.
-        self._hr_pub = self.create_publisher(Int32, "/heartrate", 10)
+        self._hr_pub = (self.create_publisher(Int32, "/heartrate", 10)
+                        if self._publish_hr else None)
         self._eda_pub = self.create_publisher(Float32, "/eda", 10)
         self._temp_pub = self.create_publisher(Float32, "/skin_temp", 10)
         self._motion_pub = self.create_publisher(Float32, "/motion", 10)
@@ -181,9 +188,10 @@ class E4SensorNode(Node):
 
     # --- the one place anything reaches ROS ---
     def _tick(self):
-        bpm = self._beats.bpm()
-        if bpm is not None:
-            self._hr_pub.publish(Int32(data=round(bpm)))
+        if self._publish_hr:
+            bpm = self._beats.bpm()
+            if bpm is not None:
+                self._hr_pub.publish(Int32(data=round(bpm)))
 
         if self._eda is not None:
             self._eda_pub.publish(Float32(data=float(self._eda)))
@@ -200,7 +208,8 @@ class E4SensorNode(Node):
             try:
                 client = E4Client(self._address) if self._address else await E4Client.find()
                 async with client:
-                    client.enable_bvp(self._on_bvp)
+                    if self._publish_hr:
+                        client.enable_bvp(self._on_bvp)
                     client.enable_gsr(self._on_gsr)
                     client.enable_temp(self._on_temp)
                     client.enable_acc(self._on_acc)
