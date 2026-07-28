@@ -1,0 +1,6 @@
+# Query the state_estimator for the user's current state.
+# Empty request: the estimator always answers from its latest cached readings.
+# drink is "" when there is nothing worth suggesting (state "calm").
+---
+string state
+string drink
