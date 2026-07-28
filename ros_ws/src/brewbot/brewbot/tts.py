@@ -8,7 +8,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 # --- espeak-ng backend ---
 # Install: sudo apt install espeak-ng
@@ -65,6 +65,11 @@ class TtsNode(Node):
 
         self._queue = queue.Queue()
 
+        # Speakers and mic share a room: asr_vosk mutes on this or it transcribes
+        # the robot answering its own question. Created BEFORE the worker starts —
+        # the worker publishes on its very first item.
+        self._speaking_pub = self.create_publisher(Bool, "/tts_speaking", 10)
+
         self._worker = threading.Thread(
             target=self._speak_worker, daemon=True
         )
@@ -83,12 +88,20 @@ class TtsNode(Node):
     def _speak_worker(self):
         while True:
             text = self._queue.get()
+            # True before synthesis, not just before playback: muting early is free,
+            # unmuting early is the whole bug.
+            self._speaking_pub.publish(Bool(data=True))
             try:
                 _speak(text)
             except FileNotFoundError as e:
                 self.get_logger().error(f"TTS binary not found: {e}")
             except Exception as e:
                 self.get_logger().error(f"TTS failed: {e}")
+            finally:
+                # Only once the queue drains — per-message would unmute the mic in
+                # the gap between two back-to-back sentences.
+                if self._queue.empty():
+                    self._speaking_pub.publish(Bool(data=False))
 
 
 def main():
