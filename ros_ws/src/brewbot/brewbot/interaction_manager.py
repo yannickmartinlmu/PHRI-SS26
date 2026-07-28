@@ -8,6 +8,9 @@ Two layers, same split as arm_controller:
 Both layers are reachable from other nodes, so the leaf carries its own lock.
 INVARIANT: never hold the mouth across an arm call — arm_controller calls
 /ask_for_water mid-motion while _execute is parked waiting on BringDrink.
+
+To query the Interaction Manager from a terminal, use
+ros2 action send_goal -f /suggest_drink brewbot_interfaces/action/SuggestDrink "{drink: 'water'}"
 """
 
 import time
