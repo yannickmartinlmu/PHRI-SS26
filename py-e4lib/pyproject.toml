@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-e4lib"
+version = "0.1.0"
+description = "Python library for streaming data from Empatica E4 via BLE"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "mountainaught", email = "your-email@example.com"}
+]
+keywords = ["empatica", "e4", "ble", "bluetooth", "wearable", "biosensor", "python"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware",
+]
+
+dependencies = [
+    "bleak>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mountainaught/py-e4lib"
+Repository = "https://github.com/mountainaught/py-e4lib"
+Issues = "https://github.com/mountainaught/py-e4lib/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["py_e4lib*"]

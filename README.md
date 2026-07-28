@@ -93,3 +93,26 @@ So add this to your ~/.bashrc:
 ```
 export GALLIUM_DRIVER=d3d12
 ```
+
+### Empatica E4 Sensor
+This section is only important if you intent to collect data from this sensor to stream on ros. 
+
+First, install the lib with 
+```
+pip install -e py-e4lib
+```
+while in the root of the repo. 
+This provides an API to use in the nodes. 
+
+#### Troubleshooting
+I had issues where the connection drops (0x08 error code).
+I found two fixes: \
+**1: Assure Bluetooth is working properly.** \
+I had an issue where BLW wouldn't discover anything, even though all software level debugs would say everything is fine. A Reboot won't necessarily fix it. What did it for me was a cold-start with the power off for a short while to drain the BL controller.\ 
+**2: Increase timeout** \
+Short energy bursts may disrupt Bluetooth, so we can 
+```
+echo 500 | sudo tee /sys/kernel/debug/bluetooth/hci0/supervision_timeout
+```
+to boost the timeout to 5s instead of the linux default of 420ms.
+This gets reset after each reboot, but I don't want to give code that permanently alters your systems. 
