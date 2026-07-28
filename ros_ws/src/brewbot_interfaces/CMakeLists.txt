@@ -8,6 +8,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ClassifyText.srv"
   "action/SuggestDrink.action"
   "action/BringDrink.action"
+  "action/DispenseDrink.action"
 )
 
 ament_package()

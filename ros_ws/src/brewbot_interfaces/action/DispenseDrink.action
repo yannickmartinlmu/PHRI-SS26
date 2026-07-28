@@ -1,0 +1,10 @@
+# Request a beverage from the coffee machine actuator.
+# The reason field is optional context from whichever inference/orchestration
+# component decided to request actuation.
+string beverage
+string reason
+---
+bool success
+string status
+---
+string status

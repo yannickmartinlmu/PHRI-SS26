@@ -30,7 +30,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
 
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (Constraints, JointConstraint, PlanningScene,
@@ -59,6 +59,8 @@ except ImportError:
 ELMO_AXES = ("carriage", "lift")
 ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
+
+COFFEE_DISPENSE_TOPIC = "/coffee_machine/dispense_request"
 
 # Rail carriage targets. Positions assumed
 RAIL_KITCHEN = -0.6       # drink-filling station
@@ -230,6 +232,12 @@ class ArmController(Node):
                 Float32, ELMO_GET.format(axis=axis),
                 lambda msg, a=axis: self._on_elmo(a, msg), 10, callback_group=cb
             )
+
+        topic = self.declare_parameter(
+            "coffee_dispense_topic",
+            COFFEE_DISPENSE_TOPIC,
+        ).value
+        self._coffee_dispense_pub = self.create_publisher(String, topic, 10)
 
         # Both arm backends stay wired; the parameter only picks which one sends.
         self.use_moveit = self.declare_parameter("use_moveit", True).value
@@ -623,6 +631,14 @@ class ArmController(Node):
         self.move_rail(RAIL_KITCHEN)
         self.move_arm(f"fill_{drink}")
 
+    def _request_coffee_machine(self, drink):
+        if self._coffee_dispense_pub.get_subscription_count() == 0:
+            self.get_logger().warn(
+                "[coffee] no coffee_machine_actuator subscriber matched"
+            )
+        self.get_logger().info(f"[coffee] dispense request -> {drink}")
+        self._coffee_dispense_pub.publish(String(data=str(drink)))
+
     def handover(self):
         self.move_rail(RAIL_HANDOVER)
         self.move_lift(LIFT_HOME)
@@ -633,9 +649,16 @@ class ArmController(Node):
         self.tuck()
         self.move_lift(LIFT_HOME)
         
-    def bring_bottle_simple(self):
+    def bring_water_simple(self):
         self.pick_glass()
         self.fill("water")
+        self.handover()
+
+    def bring_coffee_machine_drink_simple(self, drink):
+        self.pick_glass()
+        self.move_rail(RAIL_KITCHEN)
+        self.move_arm("fill_coffee")
+        self._request_coffee_machine(drink)
         self.handover()
 
     def retrieve_bottle_simple(self): 
@@ -657,9 +680,11 @@ class ArmController(Node):
         drink = goal_handle.request.drink
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
-            if(drink == "water"):
-                self.bring_bottle_simple()
-            else: 
+            if drink == "water":
+                self.bring_water_simple()
+            elif drink in ("coffee", "hot_water", "tea_water"):
+                self.bring_coffee_machine_drink_simple(drink)
+            else:
                 self.retrieve_bottle_simple()
             goal_handle.succeed()
             return BringDrink.Result(success=True)
