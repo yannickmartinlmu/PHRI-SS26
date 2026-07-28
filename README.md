@@ -101,7 +101,7 @@ First, install the lib with
 ```
 pip install -e py-e4lib
 ```
-while in the root of the repo. 
+while in the root of the repo and inside the venv. 
 This provides an API to use in the nodes. 
 
 #### Troubleshooting
