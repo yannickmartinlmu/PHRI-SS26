@@ -3,9 +3,8 @@
 
   ros2 service call /ask_llm brewbot_interfaces/srv/AskLLM "{prompt: 'hi'}"
 
-Shell only: _generate() is not wired to Ollama yet, it returns "". Everything
-around it is real, so callers can be written against it today — an empty
-response is exactly what they will see when Ollama is down anyway.
+Talks to Ollama on the lab PC. Every failure — unreachable, timed out, empty
+generation — comes back as "" and is logged here; callers just fall back.
 """
 
 import rclpy
@@ -27,10 +26,11 @@ class LLMNode(Node):
     def __init__(self):
         super().__init__("llm")
 
-        self.declare_parameter("host", "http://localhost:11434")
+        self.declare_parameter("host", "http://10.163.18.109:11434")
         self.declare_parameter("model", "llama3.2")
-        # Anything slower than this and the conversation has already died.
-        self.declare_parameter("timeout", 10.0)
+        # Generous because the FIRST call also pays for loading the model into
+        # memory. Warm calls are ~1-2s; drop this once the lab PC stays warm.
+        self.declare_parameter("timeout", 30.0)
 
         self._host = self.get_parameter("host").get_parameter_value().string_value
         self._model = self.get_parameter("model").get_parameter_value().string_value
@@ -39,7 +39,7 @@ class LLMNode(Node):
         self._srv = self.create_service(AskLLM, "ask_llm", self._handle)
 
         self.get_logger().info(
-            f"ask_llm ready (model={self._model} host={self._host}) — STUB, returns ''"
+            f"ask_llm ready (model={self._model} host={self._host})"
         )
 
     def _handle(self, request, response):
@@ -60,8 +60,6 @@ class LLMNode(Node):
         return response
 
     def _generate(self, prompt):
-        """
-        Request might look something like this:
         req = urllib.request.Request(
             f"{self._host}/api/generate",
             data=json.dumps({
@@ -70,12 +68,12 @@ class LLMNode(Node):
                 "system": SYSTEM_PROMPT,
                 "stream": False,
             }).encode(),
-        headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
         )
+        # stream:False means Ollama sends one body at the end, so this read
+        # blocks for the whole generation — timeout has to cover all of it.
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             return json.loads(r.read())["response"].strip()
-        """
-        return ""
 
 
 def main():
