@@ -1,0 +1,8 @@
+# Send a prompt to the local LLM and get its reply.
+# The system prompt lives in the llm node (it owns how the robot talks),
+# the model name is a node parameter — the caller only supplies the question.
+string prompt
+---
+# "" means no usable answer: LLM unreachable, timed out, or it said nothing.
+# The reason is logged by the llm node, callers just fall back to a canned line.
+string response

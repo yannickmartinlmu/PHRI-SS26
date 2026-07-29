@@ -8,6 +8,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ClassifyText.srv"
   "srv/GetUserState.srv"
   "srv/AskForWater.srv"
+  "srv/AskLLM.srv"
   "action/SuggestDrink.action"
   "action/BringDrink.action"
   "action/DispenseDrink.action"

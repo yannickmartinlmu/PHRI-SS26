@@ -40,6 +40,7 @@ setup(
             'asr_whisper = brewbot.asr_whisper:main',
             'web_ui = brewbot.web_ui:main',
             'nlp = brewbot.nlp:main',
+            'llm = brewbot.llm:main',
             'sensor_e4 = brewbot.sensor_e4:main',
             'sensor_hr = brewbot.sensor_hr:main',
             'sensor_fakes = brewbot.sensor_fakes:main',
