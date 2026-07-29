@@ -66,6 +66,7 @@ class TriggerNode(Node):
             self.get_logger().warn("[trigger] already running — ignored")
             return
         self._busy = True
+        reason = ""   # a hand-typed drink has no state behind it
         try:
             if drink is None:
                 if not self._state_client.wait_for_service(timeout_sec=2.0):
@@ -75,17 +76,18 @@ class TriggerNode(Node):
                     return
                 state = self._state_client.call(GetUserState.Request())
                 drink = state.drink
+                reason = state.state   # rides along so the greeting can use it
                 self.get_logger().info(f"[trigger] state={state.state} drink={drink or '-'}")
 
             if not drink:
                 self.get_logger().info("[trigger] nothing worth suggesting")
                 return
 
-            self._suggest(drink)
+            self._suggest(drink, reason)
         finally:
             self._busy = False
 
-    def _suggest(self, drink):
+    def _suggest(self, drink, reason=""):
         if not self._suggest_client.wait_for_server(timeout_sec=3.0):
             self.get_logger().error(
                 "[trigger] suggest_drink unavailable — is interaction_manager up?"
@@ -93,7 +95,7 @@ class TriggerNode(Node):
             return
 
         goal_future = self._suggest_client.send_goal_async(
-            SuggestDrink.Goal(drink=drink)
+            SuggestDrink.Goal(drink=drink, reason=reason)
         )
         while not goal_future.done():
             time.sleep(0.05)

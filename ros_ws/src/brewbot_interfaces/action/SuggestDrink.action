@@ -1,4 +1,7 @@
 string drink
+# Why we are offering it — the estimator's state ("hot", "stressed", ...). Feeds
+# the generated greeting; "" when a human forced the drink and there is no state.
+string reason
 ---
 bool accepted
 ---
