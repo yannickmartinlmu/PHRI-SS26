@@ -73,8 +73,8 @@ RAIL_HANDOVER = 1.1       # handover position
 
 # Lift height targets
 LIFT_HOME = 0.35      # same default as elmo sim
-LIFT_PICK_GLASS = 0.57
-LIFT_HANDOVER = 0.43
+LIFT_PICK_GLASS = 0.58
+LIFT_HANDOVER = 0.44
 LIFT_MIN = 0.235
 LIFT_COLLISION_STEP = 0.05  # m; virtual sweep resolution for the lift safety check.
 # ponytail: tunneling knob — arm width catches thinner boxes, shrink if one slips through.
@@ -124,7 +124,7 @@ JOINT_TOLERANCE = 0.01    # rad, MoveIt goal window
 GRIPPER_ACTION = "/robotiq_gripper_controller/gripper_cmd"
 GRIPPER_LIMIT = 0.8       # 2F-140 mechanical close limit, per info/phri-reference-guide.md
 GRIPPER_OPEN = 0.0
-GRIPPER_CLOSED = 0.5      # tune against the real glass — GRIPPER_LIMIT crushes it
+GRIPPER_CLOSED = 0.39      # tune against the real glass — GRIPPER_LIMIT crushes it
 GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
 
 # Named arm poses in JOINT SPACE — the single table both backends consume.
@@ -134,16 +134,10 @@ POSES = {
     "tuck":         [-1.57, 0.0, 1.57, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
     "above_glass":  [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57],
     "at_glass":     [-3.14, -0.9, 0.0, 0.0, 0.8, 1.57],
-    "above_glass_old":  [-3.14, -0.78, 0.0, 0.0, 0.78, 1.57],
-    # Placeholder values. Confirm in the real world by aproaching slowly
-    "fill_coffee":  [2.3, 0.3, 1.05, 0, 0.8, 1.57],
+    "fill_coffee":  [-3.09, -0.6, 0.1, 0, 1, 1.57],
     "fill_water":   [-3.53, 0.3, 0.75, 0.0, 1.15, 1.57],
-    "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57], 
-    "handover_old": [0, -0.78, 0.0, 0.0, 0.78, 1.57],
-    "test":         [-3.14, -0.4, 0.7, 0.0, 0.6, 1.57],
-    "full_extend":  [-1.57, -1.57, 0, 0.0, 0.0, 1.57],  # glass-transport pose, sim-tested
-    "fill_coffee_test": [-3.14, -0.6, 0.1, 0, 1, 1.57]
-}
+    "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57]
+    }
 
 
 def _check_poses():
@@ -679,6 +673,19 @@ class ArmController(Node):
         # instead of aborting with the glass still held at the tap.
         self._ask_for_water()
         self.handover()
+
+    def coffee_machine_approach(self):
+        self.move_rail(RAIL_KITCHEN + 0.1)
+        self.move_lift(LIFT_HOME + 0.01)
+        self.move_arm("fill_coffee")
+
+        # DANGEROUS Move without tuck. use with CAUTION!
+        self._move_elmo("carriage", RAIL_KITCHEN)
+        # address coffee machine
+        self._move_elmo("carriage", RAIL_KITCHEN + 0.1)
+
+        self.tuck()
+
 
     def bring_coffee_machine_drink_simple(self, drink):
         self.pick_glass()

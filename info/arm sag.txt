@@ -1,0 +1,32 @@
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-1.57"
+[INFO] [1785326750.446374507] [arm_controller]: [measure] ee=(-0.0020, -0.8918, 0.2887) lift=0.36000004410743713  # tape tip floor-height now
+measured: 168.5 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-1"
+[INFO] [1785326913.666183288] [arm_controller]: [measure] ee=(-0.4828, -0.7498, 0.2859) lift=0.36000004410743713  # tape tip floor-height now
+measured: 170.4 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-0.5"
+[INFO] [1785326975.075047943] [arm_controller]: [measure] ee=(-0.7820, -0.4288, 0.2859) lift=0.36000001430511475  # tape tip floor-height now
+measured: 170.3 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-2"
+[INFO] [1785327044.166209918] [arm_controller]: [measure] ee=(0.3705, -0.8112, 0.2859) lift=0.36000001430511475  # tape tip floor-height now
+measured: 165 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-2.5"
+[INFO] [1785327117.693653125] [arm_controller]: [measure] ee=(0.7134, -0.5351, 0.2859) lift=0.36000001430511475  # tape tip floor-height now
+measured: 161 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-3"
+[INFO] [1785327175.710550230] [arm_controller]: [measure] ee=(0.8828, -0.1267, 0.2859) lift=0.36000001430511475  # tape tip floor-height now
+measured: 158 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "-3.14"
+[INFO] [1785327216.520625832] [arm_controller]: [measure] ee=(0.8918, -0.0045, 0.2859) lift=0.36000001430511475  # tape tip floor-height now
+measured: 157.8 cm
+
+(ros) yannick@yannick:~/Documents/Code/PHRI-SS26/ros_ws$ ros2 run brewbot arm_controller move_and_measure "0"
+[INFO] [1785327361.366014483] [arm_controller]: [measure] ee=(-0.8918, 0.0030, 0.2849) lift=0.36000001430511475  # tape tip floor-height now
+measured: 170.2 cm

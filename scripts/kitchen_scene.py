@@ -128,8 +128,8 @@ def scene():
     b.append(("sink_rimFr", X_BOWL,               (Y_SINK[0], Y_BOWL[0]), Z_RIM))  # room side
     b.append(("sink_ext",   (X_SINK[1], X_SINK[1] + 0.5), Y_SINK,         Z_RIM)) # cavity at the end
     # coffee machine: every part but the bay, sharing ONE id so the gap between them stays open
-    for part in _coffee(COFFEE_ROT90)[:-1]:
-        b.append(("coffee_machine",) + part)
+    #for part in _coffee(COFFEE_ROT90)[:-1]:
+    #    b.append(("coffee_machine",) + part)
     # faucet
     b.append(("faucet_post",  FX, Y_POST,  Z_POST))
     b.append(("faucet_spout", FX, Y_SPOUT, Z_SPOUT))
