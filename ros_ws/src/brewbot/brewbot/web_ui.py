@@ -8,6 +8,11 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 from brewbot_interfaces.action import BringDrink
+from brewbot.drinks import MENU
+
+# Cosmetic only, and deliberately not in MENU: a new drink still gets a button
+# (with the fallback cup) without touching this file.
+ICONS = {"water": "💧", "coffee": "☕", "tea": "🍵"}
 
 
 class DrinkWebNode(Node):
@@ -115,32 +120,34 @@ PAGE = """<!DOCTYPE html>
 <body>
   <h1>BrewBot</h1>
   <p class="subtitle">What can I get you?</p>
-  <div class="buttons">
-    <form action="/drink/water" method="post">
-      <button class="drink-btn" type="submit">
-        <span class="icon">💧</span>Water
-      </button>
-    </form>
-    <form action="/drink/coffee" method="post">
-      <button class="drink-btn" type="submit">
-        <span class="icon">☕</span>Coffee
-      </button>
-    </form>
-  </div>
+  <div class="buttons">{buttons}</div>
   <div class="toast">{message}</div>
 </body>
 </html>"""
 
 
+BUTTONS = "".join(
+    f'<form action="/drink/{drink}" method="post">'
+    f'<button class="drink-btn" type="submit">'
+    f'<span class="icon">{ICONS.get(drink, "🥤")}</span>{drink.title()}'
+    f'</button></form>'
+    for drink in MENU
+)
+
+
+def _page(message="", opacity=0):
+    return PAGE.format(buttons=BUTTONS, message=message, opacity=opacity)
+
+
 @app.route("/")
 def index():
-    return PAGE.format(message="", opacity=0)
+    return _page()
 
 
 @app.route("/drink/<drink>", methods=["POST"])
 def select_drink(drink):
-    if drink not in ["water", "coffee"]:
-        return PAGE.format(message="Unknown drink.", opacity=1)
+    if drink not in MENU:
+        return _page("Unknown drink.", 1)
 
     result = drink_node.suggest_drink(drink)
 
@@ -151,7 +158,7 @@ def select_drink(drink):
     else:
         message = f"Maybe next time."
 
-    return PAGE.format(message=message, opacity=1)
+    return _page(message, 1)
 
 
 def ros_spin():

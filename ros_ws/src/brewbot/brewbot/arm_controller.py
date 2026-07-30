@@ -307,6 +307,13 @@ class ArmController(Node):
         self.get_logger().info("[elmo] discovery complete — both axes matched")
 
     def _on_goal(self, goal_request):
+        # Off-menu goals are refused here, not routed to some default skill: a
+        # wrong drink that LOOKS like it worked costs more than a rejected goal.
+        if goal_request.drink not in MENU:
+            self.get_logger().warn(
+                f"[bring_drink] not on the menu: '{goal_request.drink}' "
+                f"(have {', '.join(MENU)})")
+            return GoalResponse.REJECT
         # One arm, one goal at a time — reject rather than queue or run concurrently.
         # Simple flag, not a hard lock. Two goals landing in the same instant could both pass
         if self._busy:
@@ -657,7 +664,6 @@ class ArmController(Node):
         self.move_lift(LIFT_HOME)
 
     def fill(self, drink):
-        self.move_rail(RAIL_KITCHEN)
         self.move_arm(f"fill_{drink}")
 
     def _request_coffee_machine(self, drink):
@@ -680,10 +686,8 @@ class ArmController(Node):
         
     def bring_water_simple(self):
         self.pick_glass()
+        self.move_rail(RAIL_KITCHEN)
         self.fill("water")
-        # Not inside fill(): the coffee route visits no sink. Result deliberately
-        # unused — an unanswered prompt hands the glass back empty (recoverable)
-        # instead of aborting with the glass still held at the tap.
         self._ask_for_water()
         self.handover()
 
@@ -691,20 +695,23 @@ class ArmController(Node):
         self.move_rail(RAIL_KITCHEN + 0.1)
         self.move_lift(LIFT_HOME + 0.01)
         self.move_arm("fill_coffee")
-
         # DANGEROUS Move without tuck. use with CAUTION!
         self._move_elmo("carriage", RAIL_KITCHEN)
-        # address coffee machine
-        self._move_elmo("carriage", RAIL_KITCHEN + 0.1)
+        
 
+    def coffee_machine_departure(self):
+        # DANGEROUS Move without tuck. use with CAUTION!
+        self._move_elmo("carriage", RAIL_KITCHEN + 0.1)
+        self.move_lift(LIFT_HOME)
         self.tuck()
 
 
     def bring_coffee_machine_drink_simple(self, drink):
         self.pick_glass()
-        self.move_rail(RAIL_KITCHEN)
-        self.move_arm("fill_coffee")
-        self._request_coffee_machine(drink)
+        self.coffee_machine_approach()
+        # Uncomment if confident.
+        # self._request_coffee_machine(drink)
+        self.coffee_machine_departure()
         self.handover()
 
     def retrieve_bottle_simple(self): 
@@ -726,12 +733,13 @@ class ArmController(Node):
         drink = goal_handle.request.drink
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
-            if drink == "water":
+            # Two routes, MENU says which: sink (None) or coffee machine.
+            # _on_goal already rejected anything not in MENU.
+            beverage = MENU[drink]
+            if beverage is None:
                 self.bring_water_simple()
-            elif drink in ("coffee", "hot_water", "tea_water"):
-                self.bring_coffee_machine_drink_simple(drink)
             else:
-                self.retrieve_bottle_simple()
+                self.bring_coffee_machine_drink_simple(beverage)
             goal_handle.succeed()
             return BringDrink.Result(success=True)
         except Exception as e:

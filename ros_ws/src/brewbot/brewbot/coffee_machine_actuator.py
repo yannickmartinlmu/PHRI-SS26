@@ -14,6 +14,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from brewbot.drinks import MENU
 from brewbot.home_assistant import HomeAssistantClient, HomeAssistantError
 from brewbot_interfaces.action import DispenseDrink
 
@@ -21,12 +22,19 @@ DEVICE_ID = "4b7848243ac398e168e7d08c3a80a8c8"
 OPERATION_STATE_ENTITY = "sensor.coffee_maker_operation_state"
 DISPENSE_REQUEST_TOPIC = "/coffee_machine/dispense_request"
 
+# Home Connect programs, keyed by the actuator's OWN beverage names — the human
+# menu lives in brewbot/drinks.py and maps into these keys. Same machine dispenses
+# all of them; tea_water is the hot_water program at a lower temperature.
 PROGRAMS = {
     "coffee": "consumer_products_coffee_maker_program_beverage_coffee",
-    "espresso": "consumer_products_coffee_maker_program_beverage_espresso",
+    # "espresso": "consumer_products_coffee_maker_program_beverage_espresso",
     "hot_water": "consumer_products_coffee_maker_program_beverage_hot_water",
     "tea_water": "consumer_products_coffee_maker_program_beverage_hot_water",
 }
+
+# The cross-file contract, checked at import: nothing offerable is unbrewable.
+assert set(MENU.values()) <= set(PROGRAMS) | {None}, \
+    f"MENU beverages missing from PROGRAMS: {set(MENU.values()) - set(PROGRAMS) - {None}}"
 
 OPTIONS = {
     "fill_quantity": "consumer_products_coffee_maker_option_fill_quantity",

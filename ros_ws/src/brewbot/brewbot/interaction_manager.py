@@ -26,6 +26,7 @@ from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
 from brewbot_interfaces.action import SuggestDrink, BringDrink
 from brewbot_interfaces.srv import AskLLM, AskForWater
+from brewbot.drinks import MENU
 
 SPEECH_TIMEOUT = 30.0
 
@@ -34,11 +35,10 @@ SPEECH_TIMEOUT = 30.0
 # here would wedge every later ask, not just this one. A warm generation is ~2s.
 LLM_TIMEOUT = 10.0
 
-# What the user may be offered. This is the estimator's vocabulary (see decide()),
-# not the arm's — arm_controller only routes water/coffee/hot_water/tea_water, so
-# "tea" and "hot chocolate" already fall through there. Pre-existing mismatch;
-# the dialog layer speaks the words a human would actually say.
-DRINKS = ("water", "coffee", "tea", "hot chocolate")
+# What the user may be offered, and what a counter-offer may name. Same vocabulary
+# the estimator suggests and the arm routes — see brewbot/drinks.py, which is the
+# only place a drink gets added.
+DRINKS = tuple(MENU)
 
 # Classifier personas. The node's own persona is deliberately overridden: these
 # calls want one bare token, not a chatty barista. Both name their exact label
@@ -265,7 +265,15 @@ class SuggestionHandlerNode(Node):
                 while not bring_future.done():
                     time.sleep(0.05)
 
-                result_future = bring_future.result().get_result_async()
+                handle = bring_future.result()
+                if not handle.accepted:
+                    # Arm busy, or the drink is off-menu there. get_result_async
+                    # on a rejected handle raises, so this branch is required.
+                    self.get_logger().warn(f"[BRINGING] arm rejected '{drink}'")
+                    goal_handle.succeed()
+                    return SuggestDrink.Result(accepted=False)
+
+                result_future = handle.get_result_async()
                 while not result_future.done():
                     time.sleep(0.05)
 

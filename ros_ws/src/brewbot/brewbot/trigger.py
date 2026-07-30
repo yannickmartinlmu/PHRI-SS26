@@ -22,6 +22,7 @@ from rclpy.executors import MultiThreadedExecutor
 
 from brewbot_interfaces.action import SuggestDrink
 from brewbot_interfaces.srv import GetUserState
+from brewbot.drinks import MENU
 
 # Doubles as the cooldown after a declined offer.
 LOOP_PERIOD = 60.0
@@ -53,7 +54,8 @@ class TriggerNode(Node):
         threading.Thread(target=self._keyboard, daemon=True).start()
 
         self.get_logger().info(
-            "Trigger ready — Enter to ask the estimator, or type a drink name"
+            "Trigger ready — Enter to ask the estimator, or type one of: "
+            + ", ".join(MENU)
         )
 
     def _keyboard(self):
@@ -81,6 +83,14 @@ class TriggerNode(Node):
 
             if not drink:
                 self.get_logger().info("[trigger] nothing worth suggesting")
+                return
+
+            # Covers both ways in: a typo'd line and, if decide() ever drifts,
+            # the estimator too. Cheaper than starting a conversation about a
+            # drink the arm will refuse to fetch.
+            if drink not in MENU:
+                self.get_logger().warn(
+                    f"[trigger] not on the menu: '{drink}' — have {', '.join(MENU)}")
                 return
 
             self._suggest(drink, reason)

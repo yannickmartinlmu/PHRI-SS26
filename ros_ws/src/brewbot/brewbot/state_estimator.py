@@ -6,6 +6,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32, Float32
 from brewbot_interfaces.srv import GetUserState
+from brewbot.drinks import MENU
 
 # Fixed thresholds, no per-person calibration yet. These become
 # baseline-relative once a calibration step exists. Tune on real sensors.
@@ -17,6 +18,8 @@ FATIGUE_HRV_FRAC = 0.8  # HRV dropped below 80% of session start → fatigued
 
 
 # Pure decision tree — no ROS, so the demo() below actually tests it.
+# Every drink it names must be a MENU key; demo() asserts that, because a
+# suggestion nothing downstream can make is worse than no suggestion.
 # Order matters: resolve thermal + motion BEFORE the arousal axis, else "hot",
 # "active" and "stressed" all fight over the same HR/EDA spike. None = signal
 # not available yet (sensor not wired) → that branch is skipped.
@@ -26,7 +29,7 @@ def decide(hr, hrv, eda, temp, motion, base_hr, hrv_baseline):
         if temp >= SKIN_TEMP_HOT:
             return "hot", "water"
         if temp <= SKIN_TEMP_COLD:
-            return "cold", "hot chocolate"
+            return "cold", "tea"
 
     # 2. motion — arousal is from moving, not stress
     if motion is not None and motion >= MOTION_ACTIVE:
@@ -117,7 +120,7 @@ def demo():
     b = 70
     # thermal wins over everything, even a stress-level HR
     assert decide(90, None, None, 36.0, None, b, None) == ("hot", "water")
-    assert decide(50, None, None, 28.0, None, b, None) == ("cold", "hot chocolate")
+    assert decide(50, None, None, 28.0, None, b, None) == ("cold", "tea")
     # motion beats arousal
     assert decide(90, None, None, 33.0, 2.0, b, None) == ("active", "water")
     # arousal only when not hot/cold/moving
@@ -130,6 +133,14 @@ def demo():
     assert decide(70, None, None, None, None, b, None) == ("calm", "")
     # "no suggestion" must be falsy at the caller, not the string "None"
     assert not decide(70, None, None, None, None, b, None)[1]
+    # Nothing may be suggested that the arm cannot fetch — the drift guard.
+    for case in [(90, None, None, 36.0, None, b, None),
+                 (50, None, None, 28.0, None, b, None),
+                 (90, None, None, 33.0, 2.0, b, None),
+                 (85, None, None, 33.0, 0.2, b, None),
+                 (70, 40.0, None, 33.0, 0.0, b, 60.0)]:
+        drink = decide(*case)[1]
+        assert drink in MENU, f"decide() suggested '{drink}', not on the menu"
     print("decide() self-check passed")
 
 
