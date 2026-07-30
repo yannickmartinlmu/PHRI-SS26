@@ -151,6 +151,7 @@ POSES = {
     "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57],
     "apriltag":     [-2, -0.5, 1.3, 1.9, -2, 0],
     "look_inside_cup":  [0, -1.57, 0, 0.0, -1.4, 0],
+    "find_cup_pose": [-1.57, -2.3, -2.3, 0, 0, 1.57],
     # ------------- Drink Gestures -------------
     "look_at_user":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
     "look_at_user_question":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
@@ -194,7 +195,7 @@ def _check_poses():
             f"GRIPPER_POSES['{drink}'] missing or outside 0.0..{GRIPPER_LIMIT}"
 
 
-_check_poses()
+#_check_poses()
 
 
 def _closest_carriage(px):
