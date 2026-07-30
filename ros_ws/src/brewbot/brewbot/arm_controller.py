@@ -30,7 +30,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
 
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import SetBool
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
@@ -184,6 +184,22 @@ POSES = {
     "feed_beer_2":      [-1.57, -1.8, -1, 0.0, -1.2, 1.57]
     }
 
+# The user is either at the PC desk or in the kitchen. look_at_user already faces
+# the PC, so the kitchen is the derived one — only the base yaw differs, which is
+# ONE number to teach in the lab instead of twelve.
+# ponytail: yaw swap only. Teach full poses if the kitchen needs a different tilt.
+LOOK_KITCHEN_JOINT1 = -2.0   # rad, absolute — approximate, verify on the real arm
+for _name in ("look_at_user", "look_at_user_question"):
+    POSES[_name + "_kitchen"] = [LOOK_KITCHEN_JOINT1] + POSES[_name][1:]
+
+# Which fixed camera can see a person. NOT the arm camera: it rides the wrist,
+# so what it sees says where the arm is pointed, not where the user is.
+# Published by arm_camera_gesture_recognizer under its own node namespace.
+PERSON_TOPICS = {
+    "kitchen": "/kitchen_camera/person_present",
+    "pc": "/usb_camera/person_present",
+}
+
 GRIPPER_POSES = {
     "coffee": 0.5,
     "tea": 0.7,
@@ -212,6 +228,14 @@ def _check_poses():
         # .get default is deliberately out of range: missing and mistyped fail here.
         assert 0.0 <= GRIPPER_POSES.get(drink, -1.0) <= GRIPPER_LIMIT, \
             f"GRIPPER_POSES['{drink}'] missing or outside 0.0..{GRIPPER_LIMIT}"
+    # ask_user builds its pose names from these; a missing one is a KeyError with
+    # the arm already holding a glass. The derived yaw is checked by the joint-limit
+    # loop above, which is the whole reason the _kitchen poses go into POSES.
+    for name in ("look_at_user", "look_at_user_question"):
+        assert name in POSES and name + "_kitchen" in POSES, \
+            f"POSES needs {name}[_kitchen]"
+    assert POSES["look_at_user_kitchen"] != POSES["look_at_user"], \
+        "kitchen and PC poses are identical — one of the two directions is wrong"
 
 
 #_check_poses()
@@ -376,6 +400,17 @@ class ArmController(Node):
         self._gesture = ""
         self.create_subscription(
             String, GESTURE_EVENT_TOPIC, self._on_gesture, 10, callback_group=cb)
+
+        # ...but the eye has to be pointed the right way first. False until a
+        # recognizer says otherwise, which degrades to "assume kitchen" — the
+        # direction the arm looked before any of this existed.
+        self._person = {where: False for where in PERSON_TOPICS}
+        for where, topic in PERSON_TOPICS.items():
+            self.create_subscription(
+                Bool, topic,
+                lambda msg, w=where: self._person.__setitem__(w, msg.data),
+                10, callback_group=cb
+            )
 
         self._busy = False
         self._server = ActionServer(
@@ -858,16 +893,24 @@ class ArmController(Node):
 
     def ask_user(self, timeout=GESTURE_TIMEOUT):
         # Face the user, tilt the wrist ("well?"), then wait. The two moves are
-        # part of the question, not setup: the camera rides the wrist, so before
-        # look_at_user it is pointed at the kitchen and no thumb can be seen.
+        # part of the question, not setup: the camera rides the wrist, so until it
+        # points at the user no thumb can be seen — which is also why WHICH way it
+        # turns has to be decided here, off the fixed cameras.
         # Clearing here and not before the moves means a thumb given during the
         # mime (camera facing away, nothing detectable) cannot leak in as an answer.
         # Returns the gesture; "" = nobody answered. Three answers do not fit in a
         # bool, and "" is the failure value everywhere else in the dialog layer.
         self._answered.clear()
         self._gesture = ""
-        self.move_arm("look_at_user")
-        self.move_arm("look_at_user_question")
+        # The PC pose is the default and the tie-break — it is the one the arm has
+        # always used, so it is the known-safe swing. Turning to the kitchen needs
+        # positive evidence: someone there AND nobody at the PC. Two people, or a
+        # camera that never came up, and the arm stays with what it did before.
+        at_kitchen = self._person["kitchen"] and not self._person["pc"]
+        self.get_logger().info(
+            f"[gesture] asking towards {'kitchen' if at_kitchen else 'pc'}")
+        for pose in ("look_at_user", "look_at_user_question"):
+            self.move_arm(pose + "_kitchen" if at_kitchen else pose)
         self._answered.wait(float(timeout))   # return redundant: "" already says it
         self.get_logger().info(f"[gesture] answer={self._gesture or 'none'}")
         return self._gesture

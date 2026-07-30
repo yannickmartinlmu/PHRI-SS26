@@ -32,6 +32,10 @@ AMENT_IGNORE
 # Transformer Models
 ros_ws/src/brewbot/brewbot/models/
 
+# MediaPipe models — fetched, not versioned:
+#   python3 scripts/download_gesture_model.py && colcon build --symlink-install
+ros_ws/src/brewbot/models/
+
 # Ignore local vscode settings
 .vscode
 

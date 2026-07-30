@@ -52,11 +52,9 @@ class ArmCameraGestureRecognizer(Node):
     def __init__(self) -> None:
         super().__init__("gesture_recognizer")
 
-        default_model = os.path.join(
-            get_package_share_directory("brewbot"),
-            "models",
-            "gesture_recognizer.task",
-        )
+        models = os.path.join(get_package_share_directory("brewbot"), "models")
+        default_model = os.path.join(models, "gesture_recognizer.task")
+        default_person_model = os.path.join(models, "efficientdet_lite0.tflite")
 
         self.image_topic = str(
             self.declare_parameter("image_topic", "/camera/color/image_raw").value
@@ -105,6 +103,31 @@ class ArmCameraGestureRecognizer(Node):
             self.declare_parameter("publish_rate_hz", 10.0).value
         )
 
+        # Presence, not gestures: is a person in front of THIS camera at all, so the
+        # arm knows which way to turn to ask a question. Off by default, because it
+        # only means anything on a camera that does not move — what the wrist camera
+        # sees is a fact about the arm, not about where the user is standing.
+        self.detect_person = bool(
+            self.declare_parameter("detect_person", False).value
+        )
+        self.person_model_path = str(
+            self.declare_parameter("person_model_path", default_person_model).value
+        )
+        self.minimum_person_confidence = float(
+            self.declare_parameter("minimum_person_confidence", 0.4).value
+        )
+        # Deliberately far below max_processing_rate_hz: which side of the room
+        # someone stands on does not change ten times a second, and this is what
+        # keeps a second model off the CPU budget.
+        self.person_rate_hz = float(
+            self.declare_parameter("person_rate_hz", 2.0).value
+        )
+        # Much longer than lost_timeout_sec: a hand leaves the frame between
+        # gestures, but someone who turns to face the sink has not left the room.
+        self.person_lost_timeout_sec = float(
+            self.declare_parameter("person_lost_timeout_sec", 5.0).value
+        )
+
         self._validate_parameters()
 
         if not Path(self.model_path).is_file():
@@ -127,6 +150,8 @@ class ArmCameraGestureRecognizer(Node):
         self._last_valid_gesture_monotonic = 0.0
         self._last_hand_seen_monotonic = 0.0
         self._last_event_monotonic = -float("inf")
+        self._last_person_seen_monotonic = 0.0
+        self._last_person_check_monotonic = 0.0
 
         BaseOptions = mp.tasks.BaseOptions
         GestureRecognizer = mp.tasks.vision.GestureRecognizer
@@ -142,6 +167,29 @@ class ArmCameraGestureRecognizer(Node):
             min_tracking_confidence=self.minimum_tracking_confidence,
         )
         self._recognizer = GestureRecognizer.create_from_options(options)
+
+        self._person_detector = None
+        if self.detect_person:
+            if not Path(self.person_model_path).is_file():
+                raise RuntimeError(
+                    "MediaPipe person model not found at "
+                    f"'{self.person_model_path}'. Run "
+                    "scripts/download_gesture_model.py and rebuild brewbot."
+                )
+            ObjectDetector = mp.tasks.vision.ObjectDetector
+            ObjectDetectorOptions = mp.tasks.vision.ObjectDetectorOptions
+            self._person_detector = ObjectDetector.create_from_options(
+                ObjectDetectorOptions(
+                    base_options=BaseOptions(model_asset_path=self.person_model_path),
+                    # IMAGE, not VIDEO: at 2 Hz there is nothing to track between
+                    # frames, and it saves the timestamp bookkeeping.
+                    running_mode=RunningMode.IMAGE,
+                    # The model knows 80 COCO classes. We want one bit.
+                    category_allowlist=["person"],
+                    score_threshold=self.minimum_person_confidence,
+                    max_results=1,
+                )
+            )
 
         # State publishers are transient-local, so late subscribers immediately
         # receive the latest known state.
@@ -194,6 +242,16 @@ class ArmCameraGestureRecognizer(Node):
             String, f"{self.output_namespace}/gesture_event", event_qos
         )
 
+        # Relative name on purpose — it resolves into the node's OWN namespace
+        # (/kitchen_camera/person_present, /usb_camera/person_present). The gesture
+        # topics above are deliberately merged into one output_namespace, so this is
+        # what keeps the fixed cameras distinguishable without a second parameter.
+        self._person_pub = (
+            self.create_publisher(Bool, "person_present", state_qos)
+            if self._person_detector is not None
+            else None
+        )
+
         self._image_subscription = self.create_subscription(
             Image,
             self.image_topic,
@@ -209,7 +267,8 @@ class ArmCameraGestureRecognizer(Node):
             "Arm-camera gesture recognizer ready: "
             f"image={self.image_topic}, output={self.output_namespace}, "
             f"rate<={self.max_processing_rate_hz:.1f} Hz, "
-            f"confirm={self.required_consecutive_frames} frames"
+            f"confirm={self.required_consecutive_frames} frames, "
+            f"person_present={'on' if self.detect_person else 'off'}"
         )
 
     def _validate_parameters(self) -> None:
@@ -236,6 +295,12 @@ class ArmCameraGestureRecognizer(Node):
             raise ValueError("event_cooldown_sec must be >= 0")
         if self.publish_rate_hz <= 0.0:
             raise ValueError("publish_rate_hz must be > 0")
+        if not 0.0 <= self.minimum_person_confidence <= 1.0:
+            raise ValueError("minimum_person_confidence must be in [0, 1]")
+        if self.person_rate_hz <= 0.0:
+            raise ValueError("person_rate_hz must be > 0")
+        if self.person_lost_timeout_sec <= 0.0:
+            raise ValueError("person_lost_timeout_sec must be > 0")
 
     def _on_image(self, msg: Image) -> None:
         now = time.monotonic()
@@ -261,6 +326,12 @@ class ArmCameraGestureRecognizer(Node):
         self._last_mediapipe_timestamp_ms = timestamp_ms
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+        # Before the gesture call, which returns early on failure. The two answer
+        # different questions and neither should silence the other.
+        if self._person_detector is not None:
+            self._detect_person(mp_image, now)
+
         try:
             result = self._recognizer.recognize_for_video(mp_image, timestamp_ms)
         except Exception as exc:  # MediaPipe raises several native exception types.
@@ -275,6 +346,20 @@ class ArmCameraGestureRecognizer(Node):
             hand_present=hand_present,
             now=now,
         )
+
+    def _detect_person(self, mp_image, now: float) -> None:
+        if now - self._last_person_check_monotonic < 1.0 / self.person_rate_hz:
+            return
+        self._last_person_check_monotonic = now
+        try:
+            result = self._person_detector.detect(mp_image)
+        except Exception as exc:  # MediaPipe raises several native exception types.
+            self.get_logger().error(f"MediaPipe person detection failed: {exc}")
+            return
+        # Only "seen" is recorded; "gone" is the timeout in _publish_state, so a
+        # single missed frame cannot make the arm swing round to the other camera.
+        if result.detections:
+            self._last_person_seen_monotonic = now
 
     def _rotate_and_resize(self, rgb: np.ndarray) -> np.ndarray:
         if self.rotation_degrees == 90:
@@ -387,9 +472,18 @@ class ArmCameraGestureRecognizer(Node):
         self._thumbs_down_pub.publish(Bool(data=self._stable_gesture == THUMBS_DOWN))
         self._open_palm_pub.publish(Bool(data=self._stable_gesture == OPEN_PALM))
 
+        if self._person_pub is not None:
+            self._person_pub.publish(Bool(data=(
+                self._last_person_seen_monotonic > 0.0
+                and now - self._last_person_seen_monotonic
+                <= self.person_lost_timeout_sec
+            )))
+
     def destroy_node(self) -> bool:
         try:
             self._recognizer.close()
+            if self._person_detector is not None:
+                self._person_detector.close()
         finally:
             return super().destroy_node()
 

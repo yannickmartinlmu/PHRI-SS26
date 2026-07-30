@@ -1,0 +1,42 @@
+# MediaPipe on the fixed kitchen camera (Azure Kinect), same executable as the
+# other two. It is here mainly for `person_present` — the arm camera rides the
+# wrist, so it cannot answer "is the user at the kitchen" while pointed elsewhere.
+# Gestures from the sink are a free side effect of running the same node.
+#ros2 launch brewbot kitchen_camera_gestures.launch.py
+"/kitchen_camera/gesture_recognizer":
+  ros__parameters:
+    image_topic: /k4a/rgb/image_raw
+    output_namespace: /brewbot/perception/combined_camera
+
+    # The launch file overrides these with the installed package model paths.
+    model_path: ""
+    person_model_path: ""
+
+    # Lower than the other two: this camera exists for presence, and presence is
+    # slow. Gestures across a kitchen are a bonus, not the job.
+    max_processing_rate_hz: 6.0
+    max_input_width: 640
+
+    # Change to 90, 180 or 270 if the Kinect is mounted rotated.
+    rotation_degrees: 0
+
+    # Higher than the close-up cameras: a hand across the room is small and
+    # blurry, and a false thumbs-up from the sink answers a question nobody asked.
+    minimum_gesture_confidence: 0.65
+    minimum_hand_detection_confidence: 0.50
+    minimum_hand_presence_confidence: 0.50
+    minimum_tracking_confidence: 0.50
+
+    required_consecutive_frames: 2
+    lost_timeout_sec: 0.4
+    event_cooldown_sec: 0.1
+    publish_rate_hz: 10.0
+
+    # -> /kitchen_camera/person_present. See usb_camera_gestures.yaml.
+    detect_person: true
+    person_rate_hz: 2.0
+    # efficientdet_lite0 sees a 320x320 image, so someone at the far end of the
+    # kitchen is a handful of pixels. Drop this if presence flickers at distance;
+    # raise it if the coffee machine starts reading as a person.
+    minimum_person_confidence: 0.4
+    person_lost_timeout_sec: 5.0

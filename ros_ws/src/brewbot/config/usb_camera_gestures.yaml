@@ -27,3 +27,12 @@
     lost_timeout_sec: 0.4
     event_cooldown_sec: 0.1
     publish_rate_hz: 10.0
+
+    # This camera is fixed at the PC desk, so "a person is visible here" means
+    # "the user is at the PC". -> /usb_camera/person_present, which arm_controller
+    # uses to pick which way to turn before asking a question.
+    # Physically moving the webcam breaks that assumption; set false if you do.
+    detect_person: true
+    person_rate_hz: 2.0
+    minimum_person_confidence: 0.4
+    person_lost_timeout_sec: 5.0
