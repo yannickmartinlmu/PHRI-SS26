@@ -31,6 +31,7 @@ from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
 
 from std_msgs.msg import Float32, String
+from std_srvs.srv import SetBool
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (Constraints, JointConstraint, PlanningScene,
@@ -78,6 +79,23 @@ GESTURE_TIMEOUT = 10.0    # sec the arm holds the questioning pose waiting for a
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
 # dead transcriber parks the arm at the sink for a minute, not forever.
 WATER_CONFIRM_TIMEOUT = 60.0
+
+# Waiting under a tap looks like a hang, so the wait escalates: first just hold,
+# then a wiggle, then the lab light. Both nudges are pure feedback and both fail
+# open — no light node, no planner, the water still happens.
+WIGGLE_AFTER = 20.0       # sec of silence before the arm nudges the user
+BLINK_AFTER = 40.0        # sec before the light joins in
+ANSWER_GRACE = 10.0       # sec past the timeout before we give up on the reply
+                          # itself — interaction_manager stops listening at
+                          # WATER_CONFIRM_TIMEOUT and answers then, so cancelling
+                          # at exactly 60 would race its own response.
+WAIT_POLL = 0.1           # sec between "did they answer yet" checks
+
+# Ends on fill_water, so one wiggle puts the glass back level by itself.
+WIGGLE_POSES = ("fill_water_wiggled_1", "fill_water_wiggled_2", "fill_water")
+WIGGLE_MOVE_TIME = 1.5    # sec per leg. One wiggle is ~4.5s of servo noise inside
+                          # a 60s listening window — the ear stays open throughout.
+BLINK_SERVICE = "/lab_light/blink"
 
 # Rail carriage targets. Positions assumed
 RAIL_KITCHEN = -0.6       # drink-filling station
@@ -257,6 +275,49 @@ def _check_tilt_fit():
 _check_tilt_fit()
 
 
+# ponytail: a schedule, not a state machine — each (at, action) fires once, when
+# the clock passes it, and any answer ends the whole thing. Clock and sleep are
+# arguments so _check_escalation below can run it on a fake clock, instantly.
+# Ceiling: actions are checked for `done` only between steps, so a wiggle already
+# under way finishes before we notice the answer. Deliberate — a half-move looks
+# like a fault, and WIGGLE_MOVE_TIME keeps the overshoot to seconds.
+def escalate(steps, done, now, sleep):
+    for at, action in steps:
+        while not done() and now() < at:
+            sleep(WAIT_POLL)
+        if done():
+            return
+        action()
+
+
+def _check_escalation():
+    for pose in WIGGLE_POSES:
+        assert POSES.get(pose) is not None, f"WIGGLE_POSES: '{pose}' not teached"
+    assert WIGGLE_AFTER < BLINK_AFTER < WATER_CONFIRM_TIMEOUT, \
+        "escalation steps must be in ascending order"
+
+    # Fake clock: sleep() is the only thing that moves it, so this runs instantly.
+    clock = [0.0]
+
+    def run(answer_at):
+        clock[0] = 0.0
+        fired = []
+        escalate([(10.0, lambda: fired.append("wiggle")),
+                  (20.0, lambda: fired.append("blink")),
+                  (30.0, lambda: fired.append("give_up"))],
+                 lambda: clock[0] >= answer_at,
+                 lambda: clock[0],
+                 lambda s: clock.__setitem__(0, clock[0] + s))
+        return fired
+
+    assert run(5.0) == [], "answered early — nothing should have fired"
+    assert run(15.0) == ["wiggle"], "answered after the wiggle — no light"
+    assert run(99.0) == ["wiggle", "blink", "give_up"], "silence runs the whole ladder"
+
+
+_check_escalation()
+
+
 class ArmController(Node):
 
     def __init__(self):
@@ -290,6 +351,8 @@ class ArmController(Node):
 
         self._water_client = self.create_client(
             AskForWater, "/ask_for_water", callback_group=cb)
+        self._light_client = self.create_client(
+            SetBool, BLINK_SERVICE, callback_group=cb)
 
         # The wrist camera is the eye. The Event is what ask_user blocks on from a
         # skill thread while the executor spins; the string says which way it went.
@@ -413,14 +476,17 @@ class ArmController(Node):
             raise RuntimeError("arm goal REJECTED by the action server")
         return response.result
 
-    def _move_arm_fk(self, angles):
+    def _move_arm_fk(self, angles, seconds=FK_MOVE_TIME):
         # No IK, no collision checking: the joints go exactly where told.
+        # `seconds` is the one timing knob in this node — MoveIt has none, it only
+        # scales velocity, which is why the wiggle calls this directly.
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory(
             joint_names=JOINTS,
             points=[JointTrajectoryPoint(
                 positions=[float(a) for a in angles],
-                time_from_start=Duration(sec=FK_MOVE_TIME))])
+                time_from_start=Duration(sec=int(seconds),
+                                         nanosec=int(seconds % 1 * 1e9)))])
         result = self._send(self._fk_client, goal)
         if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
             raise RuntimeError(
@@ -517,16 +583,59 @@ class ArmController(Node):
         self._gesture = msg.data
         self._answered.set()
 
+    def _wiggle(self):
+        # FK directly, on purpose: this is a wrist twist inside a pose the arm is
+        # already holding, so there is nothing for MoveIt to plan around — and FK
+        # is the only backend that takes the duration, which is the whole point.
+        self.get_logger().info("[water] nudging the user")
+        for pose in WIGGLE_POSES:
+            self._move_arm_fk(POSES[pose], WIGGLE_MOVE_TIME)
+
+    def _blink(self, on):
+        # Fail-open like the prompt itself, and fire-and-forget: nothing downstream
+        # depends on the light having actually changed.
+        if not self._light_client.service_is_ready():
+            if on:
+                self.get_logger().warn(f"[water] {BLINK_SERVICE} unavailable — no light")
+            return
+        self._light_client.call_async(SetBool.Request(data=on))
+
     def _ask_for_water(self):
-        # Hold the pose under the tap while interaction_manager talks to the user.
+        # Hold the pose under the tap while interaction_manager talks to the user,
+        # nudging harder the longer they stay quiet — see escalate().
         # Blocking is fine: another thread spins, same as the action clients.
         # FAIL-OPEN — no dialog stack (sim, ASR down) must not make water goals
         # impossible; the caller hands over an empty glass rather than wedging.
         if not self._water_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warn("[water] /ask_for_water unavailable — skipping the prompt")
             return False
-        result = self._water_client.call(
+
+        # async, unlike every other call here: the whole feature is doing something
+        # while this is pending. The ear belongs to interaction_manager and stays
+        # open the entire time, wiggle or not.
+        future = self._water_client.call_async(
             AskForWater.Request(timeout=WATER_CONFIRM_TIMEOUT))
+        start = time.monotonic()
+        try:
+            escalate(
+                [(WIGGLE_AFTER, self._wiggle),
+                 (BLINK_AFTER, lambda: self._blink(True)),
+                 (WATER_CONFIRM_TIMEOUT + ANSWER_GRACE, lambda: None)],
+                future.done,
+                lambda: time.monotonic() - start,
+                time.sleep,
+            )
+        finally:
+            self._blink(False)   # never leave the lab light flashing
+
+        if not future.done():
+            # Only reachable if interaction_manager died holding the request — its
+            # own timeout answers first in every normal case.
+            future.cancel()
+            self.get_logger().warn("[water] no answer at all — giving up")
+            return False
+
+        result = future.result()
         confirmed = result is not None and result.confirmed
         self.get_logger().info(f"[water] confirmed={confirmed}")
         return confirmed
