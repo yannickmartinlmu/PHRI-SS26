@@ -31,3 +31,6 @@ AMENT_IGNORE
 
 # Transformer Models
 ros_ws/src/brewbot/brewbot/models/
+
+# Ignore local vscode settings
+.vscode

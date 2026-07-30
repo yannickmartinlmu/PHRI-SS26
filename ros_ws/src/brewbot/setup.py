@@ -50,6 +50,7 @@ setup(
             'trigger = brewbot.trigger:main',
             'arm_controller = brewbot.arm_controller:main',
             'coffee_machine_actuator = brewbot.coffee_machine_actuator:main',
+            'light_actuator = brewbot.light_actuator:main',
             'elmo_sim = brewbot.elmo_sim:main',
             (
                 "fixed_camera_tag_tracker = "

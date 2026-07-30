@@ -29,7 +29,6 @@ from rclpy.qos import (
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
-    qos_profile_sensor_data,
 )
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, String
@@ -144,14 +143,25 @@ class ArmCameraGestureRecognizer(Node):
         )
         self._recognizer = GestureRecognizer.create_from_options(options)
 
-        # State publishers are latched (transient local), which makes CLI
-        # diagnostics and late subscribers immediately receive the latest state.
+        # State publishers are transient-local, so late subscribers immediately
+        # receive the latest known state.
         state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+
+        # For live image processing, only the newest available frame matters.
+        # A queue depth of 1 prevents old frames from being processed later.
+        image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+
+        # Gesture events are short-lived events and are not latched.
         event_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -188,7 +198,7 @@ class ArmCameraGestureRecognizer(Node):
             Image,
             self.image_topic,
             self._on_image,
-            qos_profile_sensor_data,
+            image_qos,
         )
         self._publish_timer = self.create_timer(
             1.0 / self.publish_rate_hz,
