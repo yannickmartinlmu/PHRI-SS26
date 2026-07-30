@@ -2,28 +2,28 @@
 # Reuses the existing arm_camera_gesture_recognizer executable.
 # The local recognizer implementation is expected to map:
 #   Thumb_Up, Thumb_Down and Open_Palm.
-
+#ros2 launch brewbot usb_camera_gestures.launch.py
 "/usb_camera/gesture_recognizer":
   ros__parameters:
     image_topic: /camera/camera/color/image_raw
-    output_namespace: /brewbot/perception/usb_camera
+    output_namespace: /brewbot/perception/combined_camera
 
     # The launch file overrides this with the installed package model path.
     model_path: ""
 
     # Conservative limits to reduce CPU and memory pressure.
-    max_processing_rate_hz: 5.0
+    max_processing_rate_hz: 12.0
     max_input_width: 640
 
     # Change to 90, 180 or 270 if the image is rotated.
     rotation_degrees: 0
 
-    minimum_gesture_confidence: 0.65
+    minimum_gesture_confidence: 0.50
     minimum_hand_detection_confidence: 0.50
     minimum_hand_presence_confidence: 0.50
     minimum_tracking_confidence: 0.50
 
-    required_consecutive_frames: 3
-    lost_timeout_sec: 0.70
-    event_cooldown_sec: 1.00
+    required_consecutive_frames: 2
+    lost_timeout_sec: 0.4
+    event_cooldown_sec: 0.1
     publish_rate_hz: 10.0

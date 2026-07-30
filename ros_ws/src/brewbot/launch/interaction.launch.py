@@ -29,6 +29,7 @@ def generate_launch_description():
         Node(package="brewbot", executable="asr_vosk",            name="asr_vosk"),
         Node(package="brewbot", executable="llm",                 name="llm"),
         Node(package="brewbot", executable="tts",                 name="tts"),
+        Node(package="brewbot", executable="light_actuator",      name="light_actuator"),
         Node(package="brewbot", executable="state_estimator",     name="state_estimator"),
         Node(package="brewbot", executable="interaction_manager", name="interaction_manager"),
 

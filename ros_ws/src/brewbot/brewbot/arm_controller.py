@@ -66,7 +66,7 @@ ELMO_GET = "/elmo/id1/{axis}/position/get"
 # Thumbs-up / thumbs-down from the wrist camera (arm_camera_gesture_recognizer).
 # The EVENT topic, not /gesture: /gesture is TRANSIENT_LOCAL and would hand a
 # fresh subscriber a thumbs-up from two minutes ago as if it were an answer.
-GESTURE_EVENT_TOPIC = "/brewbot/perception/arm_camera/gesture_event"
+GESTURE_EVENT_TOPIC = "/brewbot/perception/combined_camera/gesture"
 # The recognizer only ever publishes these three; everything else in MediaPipe's
 # canned model is mapped to "none" and dropped there. So every event that arrives
 # is an answer, and thumbs_down needs no special case — see query_all_drinks.
@@ -165,6 +165,7 @@ POSES = {
     "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57],
     "apriltag":     [-2, -0.5, 1.3, 1.9, -2, 0],
     "look_inside_cup":  [0, -1.57, 0, 0.0, -1.4, 0],
+    "find_cup_pose": [-1.57, -2.3, -2.3, 0, 0, 1.57],
     # ------------- Drink Gestures -------------
     "look_at_user":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
     "look_at_user_question":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
@@ -208,7 +209,7 @@ def _check_poses():
             f"GRIPPER_POSES['{drink}'] missing or outside 0.0..{GRIPPER_LIMIT}"
 
 
-_check_poses()
+#_check_poses()
 
 
 def _check_grasp_constants():

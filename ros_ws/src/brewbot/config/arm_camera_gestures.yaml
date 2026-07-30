@@ -1,11 +1,11 @@
 # MediaPipe gesture recognition for the Kinova arm-mounted RGB camera.
 #
 # The node deliberately recognizes only thumbs-up, thumbs-down and open_palm as application gestures, even though MediaPipes canned model knows more.
-
+#ros2 launch brewbot arm_camera_gestures.launch.py start_camera:=false
 "/arm_camera/gesture_recognizer":
   ros__parameters:
     image_topic: /camera/color/image_raw
-    output_namespace: /brewbot/perception/arm_camera
+    output_namespace: /brewbot/perception/combined_camera
 
     # The launch file normally overrides this with the installed package path.
     # An absolute path may also be supplied at launch time.
@@ -13,20 +13,20 @@
 
     # Keep the perception load bounded. The camera may publish at 30 Hz, but
     # gesture communication does not need to process every frame.
-    max_processing_rate_hz: 4.0
+    max_processing_rate_hz: 12.0
     max_input_width: 640
 
     # Set to 90/180/270 if the arm camera image is mounted rotated.
     rotation_degrees: 0
 
-    minimum_gesture_confidence: 0.35 #0.65
-    minimum_hand_detection_confidence: 0.30 #0.5
-    minimum_hand_presence_confidence: 0.30 #0.5
+    minimum_gesture_confidence: 0.50 #0.65
+    minimum_hand_detection_confidence: 0.50 #0.5
+    minimum_hand_presence_confidence: 0.50 #0.5
     minimum_tracking_confidence: 0.50
 
     # Temporal stabilization: do not turn a single classification frame into
     # an HRI command.
-    required_consecutive_frames: 3
-    lost_timeout_sec: 0.70
-    event_cooldown_sec: 1.00
-    publish_rate_hz: 5.0
+    required_consecutive_frames: 2
+    lost_timeout_sec: 0.4
+    event_cooldown_sec: 0.1
+    publish_rate_hz: 10.0
