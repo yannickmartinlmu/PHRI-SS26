@@ -28,7 +28,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformListener, TransformException
 
 from std_msgs.msg import Float32, String
 from control_msgs.action import FollowJointTrajectory, GripperCommand
@@ -144,11 +144,14 @@ GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
 # cup — a full cup is simply never found, which is the point. apriltag_ros broadcasts one TF
 # frame per tag and the Kinova URDF closes camera -> base_link, so "distance and offset" is
 # a single tf2 lookup: no pixel math, no PnP of our own, no room frame, no rail.
-CUP_LOOK_POSE = "look_inside_cup"
-CUP_TAG_FRAME = "arm_tag_{id}"   # matches tag.frames in config/arm_camera_apriltags.yaml
+CUP_LOOK_POSE = "find_cup_pose"
+CUP_TAG_FRAME = "arm_obs_tag_{id}"   # matches tag.frames in config/arm_camera_apriltags.yaml
 CUP_TAG_ID = 0                   # default; pick_cup takes an override
 TAG_MAX_AGE = 1.0        # s; an older reading means the tag is gone — refuse to move
-GRASP_APPROACH_Z = 0.15  # m above the TAG (= cup inner bottom, so ~a cup-height below the rim)
+LIFT_SEARCH = 0.24       # lift's high end (~0.23), backed off for margin: widest view to search
+GRASP_APPROACH_Z = 0.15  # m of clearance between the FINGERTIPS and the tag (cup inner bottom)
+GRIPPER_LENGTH = 0.16    # m; EE_LINK is the arm's tool FLANGE (gen3_macro last_arm_link) and the
+# 2F-140 hangs off it — without this the pose goal parks the fingers a gripper-length too low.
 GRASP_BIAS_X = 0.0       # m; residual TF error ONLY. Start at 0 and tune against a real miss:
 GRASP_BIAS_Y = 0.0       # the camera-sits-above-the-gripper offset is already in the URDF.
 LIFT_GRASP_DROP = 0.12   # m of lift travel for the final descent; +ve LOWERS the gripper
@@ -165,7 +168,7 @@ POSES = {
     "handover":     [-0.2, -0.9, -0.2, 0.0, 0.9, 1.57],
     "apriltag":     [-2, -0.5, 1.3, 1.9, -2, 0],
     "look_inside_cup":  [0, -1.57, 0, 0.0, -1.4, 0],
-    "find_cup_pose": [-1.57, -2.3, -2.3, 0, 0, 1.57],
+    "find_cup_pose": [-3.14, -2.23, 0.0, 0, -2.0, 1.57],
     # ------------- Drink Gestures -------------
     "look_at_user":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
     "look_at_user_question":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
@@ -217,6 +220,7 @@ def _check_grasp_constants():
     norm = sum(c * c for c in GRIPPER_DOWN_QUAT)
     assert abs(norm - 1.0) < 1e-6, f"GRIPPER_DOWN_QUAT not normalized: |q|^2={norm}"
     assert 0.05 <= GRASP_APPROACH_Z <= 0.4, f"GRASP_APPROACH_Z={GRASP_APPROACH_Z} implausible"
+    assert 0.05 <= GRIPPER_LENGTH <= 0.3, f"GRIPPER_LENGTH={GRIPPER_LENGTH} implausible"
     for name, bias in (("GRASP_BIAS_X", GRASP_BIAS_X), ("GRASP_BIAS_Y", GRASP_BIAS_Y)):
         assert abs(bias) < 0.1, f"{name}={bias} is broken TF, not a calibration offset"
     # The descent can never exceed the standoff, so no tune drives the gripper through the
@@ -238,6 +242,32 @@ def _point_to_base(px, py, pz, carriage, lift):
     # Frame E (origin carriage=0/lift=0) -> base_link. Pure translation, 1:1 metres. A
     # clamped carriage leaves a nonzero X residual for the arm to stretch to.
     return (px + carriage, py, pz - lift)
+
+
+def _null_carriage(carriage_now, x_base):
+    # Rail target that slides base_link over a point currently x_base metres away in base_link.
+    # From _point_to_base, x_base = px + carriage, so px = x_base - carriage_now and setting
+    # carriage = carriage_now - x_base drives the new x_base to 0. Clamped: a cup past the end
+    # of the rail leaves a residual X for the arm to stretch to instead of an impossible goal.
+    return max(RAIL_MIN, min(RAIL_MAX, carriage_now - x_base))
+
+
+def _check_null_carriage():
+    # Residual = where the point lands in base_link after the rail has moved.
+    def residual(carriage_now, x_base):
+        return x_base - carriage_now + _null_carriage(carriage_now, x_base)
+    # The failing real run: carriage at 0.7, cup 0.8 out. Rail slides to -0.1 and nulls it,
+    # turning a 1.3 m reach at the edge of the envelope into a short central one.
+    assert abs(_null_carriage(0.7, 0.8) - (-0.1)) < 1e-9, _null_carriage(0.7, 0.8)
+    assert abs(residual(0.7, 0.8)) < 1e-9
+    assert abs(residual(-0.2, -0.35)) < 1e-9        # nulls in both directions
+    # Clamped at both ends, and a clamped point keeps a residual the arm must cover.
+    assert _null_carriage(0.0, 99.0) == RAIL_MIN
+    assert _null_carriage(0.0, -99.0) == RAIL_MAX
+    assert abs(residual(0.0, 99.0)) > 1e-6
+
+
+_check_null_carriage()
 
 
 def _check_transform():
@@ -746,8 +776,17 @@ class ArmController(Node):
         from rclpy.time import Time
         from rclpy.duration import Duration as RclDuration
         frame = CUP_TAG_FRAME.format(id=int(tag_id))
-        tf = self._tf_buffer.lookup_transform(
-            "base_link", frame, Time(), timeout=RclDuration(seconds=2.0))
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                "base_link", frame, Time(), timeout=RclDuration(seconds=2.0))
+        except TransformException as e:
+            # apriltag_ros broadcasts a tag's frame ONLY while it is being detected, so a
+            # missing frame means nobody has EVER seen it — not a lookup glitch. Usual causes,
+            # in order: camera isn't pointed into the cup, apriltag node isn't running, tag id
+            # or size wrong in config/arm_camera_apriltags.yaml, camera->base_link TF broken.
+            raise RuntimeError(
+                f"no TF base_link -> {frame}. Has tag {tag_id} ever been seen? Check "
+                f"`ros2 topic echo /arm_camera/detections` with the camera on the cup. ({e})")
         # tf2 serves the LAST transform forever, but apriltag stops broadcasting the instant
         # the tag leaves view. Without this the arm lunges at where the cup used to be.
         age = (self.get_clock().now() - Time.from_msg(tf.header.stamp)).nanoseconds / 1e9
@@ -760,19 +799,29 @@ class ArmController(Node):
         return (t.x, t.y, t.z)
 
     def pick_cup(self, tag_id=CUP_TAG_ID):
-        # Look down into the cup, centre over the tag, drop with the lift, grab. One look, no
-        # servo loop: if it misses, tune GRASP_BIAS_* rather than adding a controller.
+        # Coarse with the rail, fine with the arm. The look pose only has to SEE the cup — the
+        # rail then slides base_link over it, so the arm solves a short central reach instead
+        # of the ~1.3 m one at the edge of the envelope that failed every plan at first.
+        # One look, no servo loop: on a miss tune GRASP_BIAS_*, don't add a controller.
+        self.move_lift(LIFT_SEARCH)
         self.move_arm(CUP_LOOK_POSE)
         self.open_gripper()   # holding nothing here, and open fingers clear the camera's view
         x, y, z = self.find_cup(tag_id)
-        self._move_arm_pose(x + GRASP_BIAS_X, y + GRASP_BIAS_Y, z + GRASP_APPROACH_Z)
-        lift = self._elmo_pos["lift"]
-        if lift is None:
-            raise RuntimeError("no lift feedback — cannot descend onto the cup")
-        # +lift LOWERS the gripper (pick_glass drives LIFT_HOME -> LIFT_PICK_GLASS to come down
-        # onto the glass). base_link rides down rigidly, so the gripper stays over the cup and
-        # nothing needs re-planning. move_lift runs the collision sweep on the way.
-        self.move_lift(lift + LIFT_GRASP_DROP)
+        carriage = self._elmo_pos["carriage"]
+        if carriage is None:
+            raise RuntimeError("no carriage feedback — cannot slide the rail over the cup")
+        # move_rail tucks first. That is safe here: tuck moves the ARM, not base_link, so the
+        # reading stays valid — we need the numbers, not the view, and we never look again.
+        self.move_rail(_null_carriage(carriage, x))
+        # X is ~0 now, so only the sideways residual and the descent are left for the arm. Z is
+        # measured-tag minus the standoff minus the gripper, because the pose goal constrains
+        # the FLANGE and the fingers hang GRIPPER_LENGTH below it.
+        self._move_arm_pose(GRASP_BIAS_X, y + GRASP_BIAS_Y,
+                            z - GRASP_APPROACH_Z - GRIPPER_LENGTH)
+        # Absolute, not lift+delta: we set LIFT_SEARCH above, so this drops exactly the intended
+        # travel with no ELMO_TOLERANCE drift. +lift LOWERS the gripper (see pick_glass), and
+        # base_link rides down rigidly so the gripper stays over the cup with nothing replanned.
+        self.move_lift(LIFT_SEARCH + LIFT_GRASP_DROP)
         self.close_gripper()
 
     def fill(self, drink):
