@@ -6,21 +6,19 @@ and translates them into Home Connect service calls.
 """
 
 import sys
+import time
 
 import rclpy
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String
-
 from brewbot.drinks import MENU
 from brewbot.home_assistant import HomeAssistantClient, HomeAssistantError
 from brewbot_interfaces.action import DispenseDrink
 
 DEVICE_ID = "4b7848243ac398e168e7d08c3a80a8c8"
 OPERATION_STATE_ENTITY = "sensor.coffee_maker_operation_state"
-DISPENSE_REQUEST_TOPIC = "/coffee_machine/dispense_request"
 
 # Home Connect programs, keyed by the actuator's OWN beverage names — the human
 # menu lives in brewbot/drinks.py and maps into these keys. Same machine dispenses
@@ -60,6 +58,7 @@ DEFAULT_BEVERAGE_TEMPERATURES = {
 
 READY_STATES = {"ready", "inactive", "standby", "idle"}
 BUSY_STATES = {"run", "pause", "delayedstart", "actionrequired"}
+POLL_INTERVAL = 1.0
 
 
 class CoffeeMachineActuator(Node):
@@ -70,8 +69,8 @@ class CoffeeMachineActuator(Node):
         self.declare_parameter("device_id", DEVICE_ID)
         self.declare_parameter("operation_state_entity", OPERATION_STATE_ENTITY)
         self.declare_parameter("request_timeout", 10.0)
+        self.declare_parameter("program_timeout", 120.0)
         self.declare_parameter("require_ready_state", False)
-        self.declare_parameter("dispense_request_topic", DISPENSE_REQUEST_TOPIC)
         self.declare_parameter("affects_to", "active_program")
         self.declare_parameter("fill_quantity_ml", 100)
         self.declare_parameter("tea_water_temperature", "")
@@ -81,17 +80,10 @@ class CoffeeMachineActuator(Node):
         self._operation_state_entity = self.get_parameter("operation_state_entity").value
         self._require_ready_state = self.get_parameter("require_ready_state").value
         self._affects_to = self.get_parameter("affects_to").value
+        self._program_timeout = self.get_parameter("program_timeout").value
         timeout = self.get_parameter("request_timeout").value
-        topic = self.get_parameter("dispense_request_topic").value
         self._ha = HomeAssistantClient(timeout=timeout)
         self._busy = False
-        self._dispense_sub = self.create_subscription(
-            String,
-            topic,
-            self._on_dispense_request,
-            10,
-            callback_group=cb,
-        )
 
         self._server = ActionServer(
             self,
@@ -102,25 +94,6 @@ class CoffeeMachineActuator(Node):
             callback_group=cb,
         )
         self.get_logger().info("Coffee machine actuator ready")
-
-    def _on_dispense_request(self, msg):
-        beverage = self._normalize_beverage(msg.data)
-        if beverage not in PROGRAMS:
-            self.get_logger().error(
-                f"[coffee_topic] unsupported beverage: {msg.data}"
-            )
-            return
-        if self._busy:
-            self.get_logger().warn("[coffee_topic] busy - ignoring request")
-            return
-        self._busy = True
-        try:
-            self._start_checked_program(beverage)
-            self.get_logger().info(f"[coffee_topic] started {beverage}")
-        except Exception as exc:
-            self.get_logger().error(f"[coffee_topic] failed: {exc}")
-        finally:
-            self._busy = False
 
     def _on_goal(self, goal_request):
         beverage = self._normalize_beverage(goal_request.beverage)
@@ -149,8 +122,15 @@ class CoffeeMachineActuator(Node):
                 DispenseDrink.Feedback(status="starting_program")
             )
             self._start_checked_program(beverage)
+            goal_handle.publish_feedback(
+                DispenseDrink.Feedback(status="waiting_for_machine")
+            )
+            final_state = self._wait_until_done()
             goal_handle.succeed()
-            return DispenseDrink.Result(success=True, status=f"started {beverage}")
+            return DispenseDrink.Result(
+                success=True,
+                status=f"finished {beverage}: operation_state={final_state}",
+            )
         except Exception as exc:
             self.get_logger().error(f"[dispense_drink] failed: {exc}")
             goal_handle.abort()
@@ -169,6 +149,28 @@ class CoffeeMachineActuator(Node):
                 f"coffee machine is not ready: operation_state={state}"
             )
         self.start_program(beverage)
+
+    def _wait_until_done(self):
+        saw_busy = False
+        deadline = time.monotonic() + float(self._program_timeout)
+        last_state = "unknown"
+        while time.monotonic() < deadline:
+            last_state = self.get_operation_state()
+            if self._machine_busy(last_state):
+                saw_busy = True
+            elif saw_busy:
+                return last_state
+            time.sleep(POLL_INTERVAL)
+
+        if saw_busy:
+            raise HomeAssistantError(
+                f"coffee machine did not finish within {self._program_timeout}s "
+                f"(last operation_state={last_state})"
+            )
+        raise HomeAssistantError(
+            f"coffee machine never reported running within {self._program_timeout}s "
+            f"(last operation_state={last_state})"
+        )
 
     def get_operation_state(self):
         state = self._ha.get_state(self._operation_state_entity)

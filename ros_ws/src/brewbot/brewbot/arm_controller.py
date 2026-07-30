@@ -30,7 +30,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
 
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (Constraints, JointConstraint, PlanningScene,
@@ -40,7 +40,7 @@ from shape_msgs.msg import SolidPrimitive
 from geometry_msgs.msg import Pose
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
-from brewbot_interfaces.action import BringDrink
+from brewbot_interfaces.action import BringDrink, DispenseDrink
 from brewbot_interfaces.srv import AskForWater
 from brewbot.drinks import MENU
 
@@ -62,7 +62,6 @@ ELMO_AXES = ("carriage", "lift")
 ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
-COFFEE_DISPENSE_TOPIC = "/coffee_machine/dispense_request"
 
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
 # dead transcriber parks the arm at the sink for a minute, not forever.
@@ -246,11 +245,8 @@ class ArmController(Node):
                 lambda msg, a=axis: self._on_elmo(a, msg), 10, callback_group=cb
             )
 
-        topic = self.declare_parameter(
-            "coffee_dispense_topic",
-            COFFEE_DISPENSE_TOPIC,
-        ).value
-        self._coffee_dispense_pub = self.create_publisher(String, topic, 10)
+        self._coffee_client = ActionClient(
+            self, DispenseDrink, "dispense_drink", callback_group=cb)
 
         # Both arm backends stay wired; the parameter only picks which one sends.
         self.use_moveit = self.declare_parameter("use_moveit", True).value
@@ -668,12 +664,19 @@ class ArmController(Node):
         self.move_arm(f"fill_{drink}")
 
     def _request_coffee_machine(self, drink):
-        if self._coffee_dispense_pub.get_subscription_count() == 0:
-            self.get_logger().warn(
-                "[coffee] no coffee_machine_actuator subscriber matched"
+        if not self._coffee_client.wait_for_server(timeout_sec=5.0):
+            raise RuntimeError(
+                "/dispense_drink unavailable - is coffee_machine_actuator up?"
             )
-        self.get_logger().info(f"[coffee] dispense request -> {drink}")
-        self._coffee_dispense_pub.publish(String(data=str(drink)))
+        self.get_logger().info(f"[coffee] dispensing -> {drink}")
+        goal = DispenseDrink.Goal(
+            beverage=str(drink),
+            reason="arm at fill_coffee",
+        )
+        result = self._send(self._coffee_client, goal)
+        if not result.success:
+            raise RuntimeError(f"coffee machine failed: {result.status}")
+        self.get_logger().info(f"[coffee] {result.status}")
 
     def handover(self):
         self.move_rail(RAIL_HANDOVER)
@@ -710,8 +713,7 @@ class ArmController(Node):
     def bring_coffee_machine_drink_simple(self, drink):
         self.pick_glass()
         self.coffee_machine_approach()
-        # Uncomment if confident.
-        # self._request_coffee_machine(drink)
+        self._request_coffee_machine(drink)
         self.coffee_machine_departure()
         self.handover()
 
