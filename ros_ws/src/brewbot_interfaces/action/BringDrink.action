@@ -1,4 +1,7 @@
 string drink
+# true = the user waved the talking away (open palm). Mime the whole menu
+# instead of bringing anything, `drink` first, and bring what they thumbs-up.
+bool offer_menu
 ---
 bool success
 ---

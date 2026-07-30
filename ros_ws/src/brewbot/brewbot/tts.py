@@ -8,7 +8,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Empty, String
 
 # --- espeak-ng backend ---
 # Install: sudo apt install espeak-ng
@@ -26,8 +26,20 @@ PIPER_MODEL_PATH = os.path.expanduser("~/piper/en_GB-alan-medium.onnx")
 
 _piper_voice = None
 
+_playing = None   # the aplay child, so /tts_stop can cut a sentence short
+
+
+def stop():
+    # Best-effort: the child may already have exited, which is the same outcome.
+    # Only playback is interruptible, not synthesis — a palm during piper's few
+    # hundred ms of generation lets that one sentence through. Not worth a second
+    # kill path; move synthesis into the child if it ever becomes audible.
+    if _playing is not None and _playing.poll() is None:
+        _playing.terminate()
+
+
 def speak_piper(text: str):
-    global _piper_voice
+    global _piper_voice, _playing
     if _piper_voice is None:
         from piper import PiperVoice
         _piper_voice = PiperVoice.load(PIPER_MODEL_PATH)
@@ -46,9 +58,13 @@ def speak_piper(text: str):
             for chunk in _piper_voice.synthesize(text):
                 audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
-        result = subprocess.run(["aplay", tmp_path], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"aplay failed (rc={result.returncode}): {result.stderr.strip()}")
+        # Popen, not run(): stop() needs a handle on the child.
+        _playing = subprocess.Popen(["aplay", tmp_path], stderr=subprocess.PIPE, text=True)
+        _, err = _playing.communicate()
+        if _playing.returncode < 0:
+            return   # negative rc = killed by a signal, i.e. stop(). Not a failure.
+        if _playing.returncode != 0:
+            raise RuntimeError(f"aplay failed (rc={_playing.returncode}): {err.strip()}")
     finally:
         os.unlink(tmp_path)
 
@@ -79,11 +95,27 @@ class TtsNode(Node):
             String, "/tts_text", self._on_text, 10
         )
 
+        # Barge-in. Deliberately unconditional: every line is interruptible, so
+        # nothing has to carry a per-message "may be cut off" flag. The only
+        # publisher is interaction_manager's open-palm handler.
+        self.create_subscription(Empty, "/tts_stop", self._on_stop, 10)
+
         self.get_logger().info("TTS node ready")
 
     def _on_text(self, msg):
         self.get_logger().info(f"[TTS] Queued: '{msg.data}'")
         self._queue.put(msg.data)
+
+    def _on_stop(self, _):
+        # Drain BEFORE killing: the worker only unmutes the mic once the queue is
+        # empty, so a queued follow-up sentence would both start playing anyway
+        # and hold the mic muted through it.
+        dropped = 0
+        while not self._queue.empty():
+            self._queue.get_nowait()
+            dropped += 1
+        stop()
+        self.get_logger().info(f"[TTS] stopped ({dropped} queued dropped)")
 
     def _speak_worker(self):
         while True:

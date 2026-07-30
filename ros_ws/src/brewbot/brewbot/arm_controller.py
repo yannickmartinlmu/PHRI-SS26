@@ -44,6 +44,11 @@ from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink, DispenseDrink
 from brewbot_interfaces.srv import AskForWater
 from brewbot.drinks import MENU
+from brewbot.gestures import (
+    EVENT_TOPIC as GESTURE_EVENT_TOPIC,
+    UP as GESTURE_UP,
+    PALM as GESTURE_PALM,
+)
 
 # Kitchen collision scene lives in scripts/kitchen_scene.py (single source of truth,
 # user-edited). Import it by path; --symlink-install makes realpath resolve to the real
@@ -64,16 +69,10 @@ ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 
-# Thumbs-up / thumbs-down from the wrist camera (arm_camera_gesture_recognizer).
-# The EVENT topic, not /gesture: /gesture is TRANSIENT_LOCAL and would hand a
-# fresh subscriber a thumbs-up from two minutes ago as if it were an answer.
-GESTURE_EVENT_TOPIC = "/brewbot/perception/combined_camera/gesture"
-# The recognizer only ever publishes these three; everything else in MediaPipe's
-# canned model is mapped to "none" and dropped there. So every event that arrives
-# is an answer, and thumbs_down needs no special case — see query_all_drinks.
-GESTURE_UP = "thumbs_up"        # bring this one
-GESTURE_DOWN = "thumbs_down"    # offer the next one
-GESTURE_PALM = "open_palm"      # stop asking altogether
+# Every hand the robot can see — both recognizers feed this one topic. The names
+# and the reason it is the EVENT topic live in brewbot/gestures.py, because
+# interaction_manager watches the same topic for the open-palm barge-in.
+# thumbs_down needs no special case here — see query_all_drinks.
 GESTURE_TIMEOUT = 10.0    # sec the arm holds the questioning pose waiting for an answer
 
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
@@ -273,6 +272,23 @@ def _check_tilt_fit():
 
 
 _check_tilt_fit()
+
+
+# The order query_all_drinks mimes when the user waves the talking away. The
+# suggestion goes first: they already heard it named, so it is the shortest path
+# to a thumbs-up. MENU order for the rest — no ranking exists to do better.
+def menu_from(drink):
+    return (drink,) + tuple(d for d in MENU if d != drink)
+
+
+def _check_menu_order():
+    for drink in MENU:
+        order = menu_from(drink)
+        assert order[0] == drink, f"menu_from({drink}) put {order[0]} first"
+        # Nothing dropped and nothing offered twice — the arm mimes this list.
+        assert sorted(order) == sorted(MENU), f"menu_from({drink}) -> {order}"
+
+_check_menu_order()
 
 
 # ponytail: a schedule, not a state machine — each (at, action) fires once, when
@@ -929,6 +945,17 @@ class ArmController(Node):
         drink = goal_handle.request.drink
         self.get_logger().info(f"[bring_drink] {drink}")
         try:
+            if goal_handle.request.offer_menu:
+                # The user waved the talking away, so the arm asks instead — mime
+                # the menu and bring whatever gets a thumbs-up. Inside the try: the
+                # mime is motion and a raised move must abort like any other.
+                drink = self.query_all_drinks(*menu_from(drink))
+                if not drink:
+                    # Palmed again, or thumbed everything down. Asked and answered.
+                    self.get_logger().info("[bring_drink] nothing chosen")
+                    goal_handle.succeed()
+                    return BringDrink.Result(success=False)
+
             # Two routes, MENU says which: sink (None) or coffee machine.
             # _on_goal already rejected anything not in MENU.
             beverage = MENU[drink]

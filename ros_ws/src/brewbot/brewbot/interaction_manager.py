@@ -23,10 +23,11 @@ from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from brewbot_interfaces.action import SuggestDrink, BringDrink
 from brewbot_interfaces.srv import AskLLM, AskForWater
 from brewbot.drinks import MENU
+from brewbot import gestures
 
 SPEECH_TIMEOUT = 30.0
 
@@ -63,6 +64,32 @@ WATER_PROMPT = ("I am ready. Please fill as much water as you like, "
                 "then tell me when you are done.")
 WATER_GIVEUP = "No answer. I will put the glass back."
 
+# A fourth answer from _ask, alongside a label and "": the user waved the talking
+# away mid-sentence. Not a label because no classifier produced it and no LLM was
+# asked — a hand is not a sentence. Only _execute acts on it; see there.
+PALM = "PALM"
+
+# Gestures that end an _ask, per ask. Open palm always does (it is the barge-in
+# itself); anything else is opt-in, because the same hand means different things
+# to different questions — a thumbs-up is "done" at the tap and "yes" to an offer.
+GESTURE_ANSWERS = {gestures.PALM: PALM}
+WATER_GESTURES = {gestures.PALM: "DONE", gestures.UP: "DONE"}
+
+
+def _check_gestures():
+    # Drift guard. Both failures are silent at runtime: a misspelt gesture simply
+    # never answers, and a label no caller accepts reads as "they said nothing".
+    for table in (GESTURE_ANSWERS, WATER_GESTURES):
+        for name in table:
+            assert name in (gestures.UP, gestures.DOWN, gestures.PALM), \
+                f"'{name}' is not a gesture the recognizer publishes"
+    assert set(WATER_GESTURES.values()) <= {"DONE", "WAIT"}, \
+        "water gestures must answer with a label _on_ask_for_water accepts"
+    assert GESTURE_ANSWERS[gestures.PALM] == PALM, \
+        "open palm is the barge-in — _execute tests for exactly this value"
+
+_check_gestures()
+
 
 def _match(answer, labels):
     # However firmly the system prompt says "one word, no punctuation", an LLM
@@ -81,9 +108,16 @@ class SuggestionHandlerNode(Node):
         cb = ReentrantCallbackGroup()
 
         self._tts_pub = self.create_publisher(String, "/tts_text", 10)
+        self._tts_stop_pub = self.create_publisher(Empty, "/tts_stop", 10)
 
         self._speech_sub = self.create_subscription(
             String, "/speech_text", self._on_speech, 10, callback_group=cb
+        )
+        # The other way to answer. Same topic the arm watches for thumbs during
+        # its mime — the mouth lock below is what keeps the two from stealing
+        # each other's hands.
+        self.create_subscription(
+            String, gestures.EVENT_TOPIC, self._on_gesture, 10, callback_group=cb
         )
 
         # One client, two jobs: classifying replies and writing the greeting.
@@ -116,6 +150,8 @@ class SuggestionHandlerNode(Node):
         self._busy = False
         self._speech_event = threading.Event()
         self._speech_text = None
+        self._gestures = {}      # what a hand means to the ask that is running
+        self._gesture_answer = None
 
         self.get_logger().info("Interaction manager ready")
 
@@ -137,6 +173,18 @@ class SuggestionHandlerNode(Node):
             self._speech_event.set()
         else:
             self.get_logger().debug(f"[SPEECH] Ignored (not asking): '{msg.data}'")
+
+    def _on_gesture(self, msg):
+        # Same gate as _on_speech, for the same reason: the lock IS "we are
+        # listening". Without it a thumbs-up meant for the arm's mime — which runs
+        # while this node is parked in its BringDrink wait — would land here.
+        answer = self._gestures.get(msg.data) if self._mouth.locked() else None
+        if not answer:
+            return
+        self.get_logger().info(f"[GESTURE] {msg.data} -> {answer}")
+        self._tts_stop_pub.publish(Empty())   # they have heard enough
+        self._gesture_answer = answer
+        self._speech_event.set()
 
     # ---- the dialog leaf: the ONE place the robot talks and listens ----
 
@@ -160,17 +208,23 @@ class SuggestionHandlerNode(Node):
             time.sleep(0.05)
         return future.result().response
 
-    def _ask(self, text, timeout, system, labels):
+    def _ask(self, text, timeout, system, labels, gesture_answers=GESTURE_ANSWERS):
         # Returns one of `labels`; "" = nobody answered, or the LLM went
         # off-menu. Three-valued because a silent user and a refusing user are
         # different outcomes to every caller — and both of those callers already
         # treat "" as their safe fallback, so an unusable answer joins them.
+        # A hand can also answer, and then the value is whatever
+        # `gesture_answers` maps it to — a label, or PALM.
         if not self._mouth.acquire(blocking=False):
             self.get_logger().warn(f"[ASK] already talking — dropped: '{text}'")
             return ""
         try:
             self._speech_event.clear()
             self._speech_text = None
+            # Set with the lock held and before the mouth opens, so a hand raised
+            # during the previous ask cannot answer this one.
+            self._gesture_answer = None
+            self._gestures = gesture_answers
 
             self.get_logger().info(f"[ASK] TTS: '{text}' (up to {timeout}s)")
             self._tts_pub.publish(String(data=text))
@@ -178,6 +232,11 @@ class SuggestionHandlerNode(Node):
             if not self._speech_event.wait(timeout=timeout):
                 self.get_logger().warn("[ASK] timed out — no response")
                 return ""
+
+            if self._gesture_answer:
+                # A hand, not a sentence: nothing for the classifier to read, and
+                # the gesture already means exactly one thing to this question.
+                return self._gesture_answer
 
             self.get_logger().info(f"[ASK] classifying: '{self._speech_text}'")
             # The question is half the meaning — "no, a coffee instead" only
@@ -217,9 +276,12 @@ class SuggestionHandlerNode(Node):
         # WAIT and "" both give up here, which is the wrong direction for a
         # misheard word — the real guard against a half-filled glass is the
         # caller's timeout, not this branch.
+        # A raised hand means "done" here, palm or thumb alike — someone mid-pour
+        # is holding a glass under a tap and is not going to free a hand to wave
+        # at the robot, so any hand at all is them finishing, not interrupting.
         response.confirmed = (
             self._ask(WATER_PROMPT, request.timeout, WATER_SYSTEM,
-                      ("DONE", "WAIT")) == "DONE"
+                      ("DONE", "WAIT"), WATER_GESTURES) == "DONE"
         )
         if not response.confirmed:
             self._tts_pub.publish(String(data=WATER_GIVEUP))
@@ -240,14 +302,16 @@ class SuggestionHandlerNode(Node):
                 goal_handle.abort()
                 return SuggestDrink.Result(accepted=False)
 
-            if answer in DRINKS and answer != drink:
+            if answer == PALM:
+                # Waved off. They did not decline the drink, they declined being
+                # talked to — so the arm mimes the menu instead of us saying more.
+                self.get_logger().info("[GOAL] open palm — arm will mime the menu")
+            elif answer in DRINKS and answer != drink:
                 # Counter-offer: they already told us what they want, so asking
                 # "would you like a coffee?" back at them would just be rude.
                 self.get_logger().info(f"[GOAL] switched '{drink}' -> '{answer}'")
                 drink = answer
-                answer = "YES"
-
-            if answer != "YES":
+            elif answer != "YES":
                 self.get_logger().info("[GOAL] user declined")
                 goal_handle.succeed()
                 return SuggestDrink.Result(accepted=False)
@@ -260,7 +324,7 @@ class SuggestionHandlerNode(Node):
                 self.get_logger().warn("[BRINGING] No bring_drink server found, skipping")
             else:
                 bring_future = self._bring_client.send_goal_async(
-                    BringDrink.Goal(drink=drink)
+                    BringDrink.Goal(drink=drink, offer_menu=(answer == PALM))
                 )
                 while not bring_future.done():
                     time.sleep(0.05)
