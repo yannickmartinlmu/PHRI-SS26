@@ -42,6 +42,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from brewbot_interfaces.action import BringDrink
 from brewbot_interfaces.srv import AskForWater
+from brewbot.drinks import MENU
 
 # Kitchen collision scene lives in scripts/kitchen_scene.py (single source of truth,
 # user-edited). Import it by path; --symlink-install makes realpath resolve to the real
