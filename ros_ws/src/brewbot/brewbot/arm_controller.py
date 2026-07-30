@@ -118,11 +118,11 @@ EE_LINK = "end_effector_link"
 # (the unreachable rail zero), axes parallel to base_link. Elmo feedback is metres 1:1
 # (see elmo-axis-mapping), so E->base_link is pure translation and the carriage nulls X.
 RAIL_MIN, RAIL_MAX = -0.6, 1.1      # ponytail: physical rail travel; widen if it reaches further
-GRIPPER_HORIZ_QUAT = (0.5, -0.5, 0.5, -0.5)   # horizontal side grasp; proven as arm_teleop HORIZ
-# ponytail: verify — jog arm to a level side grasp, `tf2_echo base_link end_effector_link`
+GRIPPER_DOWN_QUAT = (0.0, 0.0, 0.0, 1.0)   # top-down approach orientation
 POSE_POS_TOL = 0.01      # m; IK position window (sphere radius)
-POSE_LEVEL_TOL = 0.01     # rad; how far the wrist may tilt off level (pitch/roll)
-POSE_YAW_TOL = 3.15      # rad; ~free azimuth about vertical — round upright bottle, approach from any side
+POSE_LEVEL_TOL = 0.1     # rad; how far off top-down the wrist may tilt (pitch/roll). The arm
+# hangs from the ceiling and points down anyway, so this is slack for IK, not risk.
+POSE_YAW_TOL = 3.15      # rad; ~free spin about vertical — the cup is round
 
 JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
@@ -138,6 +138,20 @@ GRIPPER_LIMIT = 0.8       # 2F-140 mechanical close limit, per info/phri-referen
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSED = 0.39      # tune against the real glass — GRIPPER_LIMIT crushes it
 GRIPPER_MAX_EFFORT = 10.0  # N; lower if the glass complains
+
+# ---- cup pick (arm camera + AprilTag) ----
+# The tag sits at the cup's INNER BOTTOM, so it is only visible looking down into an EMPTY
+# cup — a full cup is simply never found, which is the point. apriltag_ros broadcasts one TF
+# frame per tag and the Kinova URDF closes camera -> base_link, so "distance and offset" is
+# a single tf2 lookup: no pixel math, no PnP of our own, no room frame, no rail.
+CUP_LOOK_POSE = "look_inside_cup"
+CUP_TAG_FRAME = "arm_tag_{id}"   # matches tag.frames in config/arm_camera_apriltags.yaml
+CUP_TAG_ID = 0                   # default; pick_cup takes an override
+TAG_MAX_AGE = 1.0        # s; an older reading means the tag is gone — refuse to move
+GRASP_APPROACH_Z = 0.15  # m above the TAG (= cup inner bottom, so ~a cup-height below the rim)
+GRASP_BIAS_X = 0.0       # m; residual TF error ONLY. Start at 0 and tune against a real miss:
+GRASP_BIAS_Y = 0.0       # the camera-sits-above-the-gripper offset is already in the URDF.
+LIFT_GRASP_DROP = 0.12   # m of lift travel for the final descent; +ve LOWERS the gripper
 
 # Named arm poses in JOINT SPACE — the single table both backends consume.
 # None = not teached yet: jog the arm, then `ros2 topic echo /joint_states`.
@@ -195,6 +209,22 @@ def _check_poses():
 
 
 _check_poses()
+
+
+def _check_grasp_constants():
+    # Same idea as _check_poses: a fat-fingered tune refuses to start the node.
+    norm = sum(c * c for c in GRIPPER_DOWN_QUAT)
+    assert abs(norm - 1.0) < 1e-6, f"GRIPPER_DOWN_QUAT not normalized: |q|^2={norm}"
+    assert 0.05 <= GRASP_APPROACH_Z <= 0.4, f"GRASP_APPROACH_Z={GRASP_APPROACH_Z} implausible"
+    for name, bias in (("GRASP_BIAS_X", GRASP_BIAS_X), ("GRASP_BIAS_Y", GRASP_BIAS_Y)):
+        assert abs(bias) < 0.1, f"{name}={bias} is broken TF, not a calibration offset"
+    # The descent can never exceed the standoff, so no tune drives the gripper through the
+    # table on the way to the cup.
+    assert 0.0 < LIFT_GRASP_DROP < GRASP_APPROACH_Z, \
+        f"LIFT_GRASP_DROP={LIFT_GRASP_DROP} must be >0 and < GRASP_APPROACH_Z={GRASP_APPROACH_Z}"
+
+
+_check_grasp_constants()
 
 
 def _closest_carriage(px):
@@ -444,12 +474,13 @@ class ArmController(Node):
 
     def _move_arm_pose(self, x, y, z):
         # The ONE place Cartesian IK lives. MoveIt only — FK has no IK. Position: a small
-        # sphere at (x,y,z) in base_link. Orientation: gripper horizontal (side grasp, fingers
-        # close level around the upright bottle), approach azimuth ~free because the bottle is
-        # round. Mirrors the proven message shape in scripts/arm_teleop.py make_goal().
+        # sphere at (x,y,z) in base_link. Orientation: gripper top-down (approach the cup from
+        # above so the Elmo lift can do the final descent along the approach axis), spin ~free
+        # about the vertical because the cup is round. Mirrors the proven message shape in
+        # scripts/arm_teleop.py make_goal().
         if not self.use_moveit:
             raise RuntimeError("_move_arm_pose needs use_moveit:=true (FK has no IK)")
-        self.get_logger().info(f"[arm] -> pose ({x:.3f}, {y:.3f}, {z:.3f}) horizontal")
+        self.get_logger().info(f"[arm] -> pose ({x:.3f}, {y:.3f}, {z:.3f}) top-down")
         region = Pose()
         region.position.x, region.position.y, region.position.z = float(x), float(y), float(z)
         region.orientation.w = 1.0
@@ -464,12 +495,12 @@ class ArmController(Node):
         oc.header.frame_id = "base_link"
         oc.link_name = EE_LINK
         (oc.orientation.x, oc.orientation.y,
-         oc.orientation.z, oc.orientation.w) = GRIPPER_HORIZ_QUAT
-        # ponytail: HORIZ_QUAT maps EE y -> base vertical (math, not measured), so the free
-        # azimuth rides the Y tolerance. Wrong tilt in a test? swap which axis gets POSE_YAW_TOL.
+         oc.orientation.z, oc.orientation.w) = GRIPPER_DOWN_QUAT
+        # ponytail: tight on tilt, free on the spin about vertical. Wrong tilt in a test?
+        # swap which axis gets POSE_YAW_TOL — `measure` prints the live EE rotation to compare.
         oc.absolute_x_axis_tolerance = POSE_LEVEL_TOL
-        oc.absolute_y_axis_tolerance = POSE_YAW_TOL
-        oc.absolute_z_axis_tolerance = POSE_LEVEL_TOL
+        oc.absolute_y_axis_tolerance = POSE_LEVEL_TOL
+        oc.absolute_z_axis_tolerance = POSE_YAW_TOL
         oc.weight = 1.0
         goal = MoveGroup.Goal()
         req = goal.request
@@ -652,10 +683,14 @@ class ArmController(Node):
         from rclpy.duration import Duration as RclDuration
         tf = self._tf_buffer.lookup_transform(
             "base_link", EE_LINK, Time(), timeout=RclDuration(seconds=2.0))
-        t = tf.transform.translation
+        t, r = tf.transform.translation, tf.transform.rotation
         lift = self._elmo_pos["lift"]
         self.get_logger().info(
             f"[measure] ee=({t.x:.4f}, {t.y:.4f}, {t.z:.4f}) lift={lift}  # tape tip floor-height now")
+        # Rotation is the calibration readout for GRIPPER_DOWN_QUAT: jog to a true top-down
+        # pose, run this, paste the quat.
+        self.get_logger().info(
+            f"[measure] quat=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})")
         return (t.x, t.y, t.z, lift)
 
     def move_and_measure(self, joint_1):
@@ -702,6 +737,43 @@ class ArmController(Node):
         self.close_gripper()
         self.move_lift(LIFT_HOME)
 
+    def find_cup(self, tag_id=CUP_TAG_ID):
+        # Where the cup is, in base_link. apriltag_ros already publishes the tag as a TF frame
+        # off the camera and the Kinova URDF closes camera -> base_link, so this is the whole
+        # "calculate distance and offset" step. The camera being mounted above the gripper is
+        # in the URDF, not in this code — hence GRASP_BIAS_* is residual error, not the mount.
+        from rclpy.time import Time
+        from rclpy.duration import Duration as RclDuration
+        frame = CUP_TAG_FRAME.format(id=int(tag_id))
+        tf = self._tf_buffer.lookup_transform(
+            "base_link", frame, Time(), timeout=RclDuration(seconds=2.0))
+        # tf2 serves the LAST transform forever, but apriltag stops broadcasting the instant
+        # the tag leaves view. Without this the arm lunges at where the cup used to be.
+        age = (self.get_clock().now() - Time.from_msg(tf.header.stamp)).nanoseconds / 1e9
+        if age > TAG_MAX_AGE:
+            raise RuntimeError(
+                f"{frame} is {age:.1f}s stale (max {TAG_MAX_AGE}s) — tag not currently visible")
+        t = tf.transform.translation
+        self.get_logger().info(
+            f"[cup] {frame} at ({t.x:.3f}, {t.y:.3f}, {t.z:.3f}) age={age:.2f}s")
+        return (t.x, t.y, t.z)
+
+    def pick_cup(self, tag_id=CUP_TAG_ID):
+        # Look down into the cup, centre over the tag, drop with the lift, grab. One look, no
+        # servo loop: if it misses, tune GRASP_BIAS_* rather than adding a controller.
+        self.move_arm(CUP_LOOK_POSE)
+        self.open_gripper()   # holding nothing here, and open fingers clear the camera's view
+        x, y, z = self.find_cup(tag_id)
+        self._move_arm_pose(x + GRASP_BIAS_X, y + GRASP_BIAS_Y, z + GRASP_APPROACH_Z)
+        lift = self._elmo_pos["lift"]
+        if lift is None:
+            raise RuntimeError("no lift feedback — cannot descend onto the cup")
+        # +lift LOWERS the gripper (pick_glass drives LIFT_HOME -> LIFT_PICK_GLASS to come down
+        # onto the glass). base_link rides down rigidly, so the gripper stays over the cup and
+        # nothing needs re-planning. move_lift runs the collision sweep on the way.
+        self.move_lift(lift + LIFT_GRASP_DROP)
+        self.close_gripper()
+
     def fill(self, drink):
         self.move_arm(f"fill_{drink}")
 
@@ -746,6 +818,8 @@ class ArmController(Node):
 
     def query_all_drinks(self, *drinks):
         # menu order — put the estimator's likeliest drink first once wired.
+        self.move_rail(0.8)
+        self.move_lift(LIFT_HOME)
         for drink in drinks or MENU:
             self.do_gesture(drink)
             answer = self.ask_user()
@@ -778,7 +852,7 @@ class ArmController(Node):
 
     def coffee_machine_approach(self):
         self.move_rail(RAIL_KITCHEN + 0.1)
-        self.move_lift(LIFT_HOME + 0.01)
+        self.move_lift(LIFT_HOME + 0.02)
         self.move_arm("fill_coffee")
         # DANGEROUS Move without tuck. use with CAUTION!
         self._move_elmo("carriage", RAIL_KITCHEN)
