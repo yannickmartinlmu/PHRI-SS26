@@ -34,3 +34,6 @@ ros_ws/src/brewbot/brewbot/models/
 
 # Ignore local vscode settings
 .vscode
+
+# Local files
+info/pick cup fails.txt
