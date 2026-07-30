@@ -2,9 +2,10 @@
 """Trigger — decides WHEN to interrupt the user.
 
 state_estimator answers what the user needs but never initiates; this node is
-the one that initiates. Two ways in, both landing on _fire():
+the one that initiates. Three ways in, all landing on _fire():
   - keyboard: Enter (ask the estimator) or a drink name (skip it, force one)
   - auto:=true: the same query on a 60s loop
+  - /user_arrived: someone put the E4 on (see sensor_e4)
 
 Keeping the policy here is why the estimator stays a passive service — swap
 this node for an arrival/gesture trigger and nothing downstream changes.
@@ -20,6 +21,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
+from std_msgs.msg import Empty
 from brewbot_interfaces.action import SuggestDrink
 from brewbot_interfaces.srv import GetUserState
 from brewbot.drinks import MENU
@@ -46,6 +48,12 @@ class TriggerNode(Node):
         # stack blocked threads behind a user who is still being talked to.
         self._busy = False
 
+        # Reentrant + _busy: _fire blocks here for the whole conversation, and
+        # the estimator query it makes is a service call on this same executor.
+        self.create_subscription(
+            Empty, "/user_arrived", lambda _: self._fire(), 10, callback_group=cb
+        )
+
         self.declare_parameter("auto", False)
         if self.get_parameter("auto").get_parameter_value().bool_value:
             self.create_timer(LOOP_PERIOD, self._fire, callback_group=cb)
@@ -54,8 +62,8 @@ class TriggerNode(Node):
         threading.Thread(target=self._keyboard, daemon=True).start()
 
         self.get_logger().info(
-            "Trigger ready — Enter to ask the estimator, or type one of: "
-            + ", ".join(MENU)
+            "Trigger ready — /user_arrived, Enter to ask the estimator, "
+            "or type one of: " + ", ".join(MENU)
         )
 
     def _keyboard(self):

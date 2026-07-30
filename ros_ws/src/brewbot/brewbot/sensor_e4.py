@@ -11,12 +11,13 @@ import asyncio
 import math
 import sys
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float32
+from std_msgs.msg import Empty, Int32, Float32
 
 # py-e4lib ships with the repo but sits outside the workspace, and `ros2 run`
 # executes under /usr/bin/python3, which never sees the venv — so pip installing
@@ -48,7 +49,12 @@ OCTAVE_TOL = 0.8      # a lag of 2T correlates nearly as well as T, and taking
                       # the FIRST peak within this fraction of the best instead.
 MIN_QUALITY = 0.05    # normalised peak below this is noise, not a pulse
 PUBLISH_HZ = 1.0      # BLE streams at 4–64 Hz; decide() must not run that fast
-RECONNECT_DELAY = 5.0 # s, the E4's 0x08 supervision-timeout drops are routine
+RECONNECT_DELAY = 1.0 # s between scan attempts. The E4's 0x08 supervision-timeout
+                      # drops are routine, and find() already blocks ~10 s scanning,
+                      # so this only sets how briefly the radio idles in between.
+ARRIVAL_GAP = 120.0   # s offline before a reconnect counts as a person ARRIVING
+                      # rather than the link bouncing. Longer than the worst
+                      # observed 0x08 drop+rescan, shorter than a coffee break.
 
 
 class HeartRate:
@@ -156,6 +162,13 @@ class E4SensorNode(Node):
         self._temp_pub = self.create_publisher(Float32, "/skin_temp", 10)
         self._motion_pub = self.create_publisher(Float32, "/motion", 10)
 
+        # Wearing the band IS the arrival signal — no separate presence sensor.
+        # An event, not a stream: subscribers act once (trigger opens a
+        # conversation; the arm could look at the entrance) and a level topic
+        # would make each of them own the same edge detection.
+        self._arrival_pub = self.create_publisher(Empty, "/user_arrived", 10)
+        self._last_seen = 0.0   # monotonic; 0 = never, so the first connect fires
+
         # ponytail: BLE thread writes these, timer thread reads them. Plain
         # attribute assignment and deque.append are GIL-atomic; add a lock only
         # if this ever grows into a read-modify-write.
@@ -215,7 +228,11 @@ class E4SensorNode(Node):
                     client.enable_acc(self._on_acc)
                     await client.start()
                     self.get_logger().info("E4 streaming")
+                    if time.monotonic() - self._last_seen > ARRIVAL_GAP:
+                        self.get_logger().info("[arrival] /user_arrived")
+                        self._arrival_pub.publish(Empty())
                     while rclpy.ok() and client.connected:
+                        self._last_seen = time.monotonic()
                         await asyncio.sleep(1.0)
                 self.get_logger().warn("E4 link lost")
             except Exception as e:
