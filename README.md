@@ -80,12 +80,18 @@ What does not work is the Gripper and the Twist Controller.
 But i don't think we need the Twist Controller and the Gripper should be easy enough to get working on real hardware. 
 
 Additionally there is a simple simulation for ELMO.
-To launch both of them simultanously, use the launch file:
-```
-ros2 launch PROJECTPATH/scripts/sim.launch.py
-```
-I also recommend setting an alias for this. 
+To launch both of them simultanously, use the one of the launch file:
 
+### Launch Files
+To get the desired mix of nodes running quickly, use one of the provided launch files. 
+```
+ros2 launch brewbot sim.launch.py                        # arm sim
+ros2 launch brewbot interaction.launch.py                # conversation, fake sensors
+ros2 launch brewbot full.launch.py sim_arm:=true         # full sim
+ros2 launch brewbot sensors.launch.py                    # sensor tuning on-site
+ros2 launch brewbot full.launch.py fake_sensors:=false   # on-site / lab
+ros2 run brewbot trigger                                 # always its own terminal
+```
 #### Use GPU-Rendering
 For me, rviz defaulted to using slow software rendering. 
 Under WSL2, we can tell the Graphics Library (Gallium) to use whatever vendor-agnostic 3d library we have.
