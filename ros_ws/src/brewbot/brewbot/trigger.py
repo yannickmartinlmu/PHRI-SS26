@@ -2,10 +2,11 @@
 """Trigger — decides WHEN to interrupt the user.
 
 state_estimator answers what the user needs but never initiates; this node is
-the one that initiates. Three ways in, all landing on _fire():
+the one that initiates. Four ways in, all landing on _fire():
   - keyboard: Enter (ask the estimator) or a drink name (skip it, force one)
   - auto:=true: the same query on a 60s loop
   - /user_arrived: someone put the E4 on (see sensor_e4)
+  - /user_spike: the estimator's reading crossed into "worth an offer"
 
 Keeping the policy here is why the estimator stays a passive service — swap
 this node for an arrival/gesture trigger and nothing downstream changes.
@@ -52,6 +53,11 @@ class TriggerNode(Node):
         # the estimator query it makes is a service call on this same executor.
         self.create_subscription(
             Empty, "/user_arrived", lambda _: self._fire(), 10, callback_group=cb
+        )
+        # Empty, not the drink: _fire() re-queries so the greeting still gets
+        # the `reason` string. One redundant service call, no new interface.
+        self.create_subscription(
+            Empty, "/user_spike", lambda _: self._fire(), 10, callback_group=cb
         )
 
         self.declare_parameter("auto", False)

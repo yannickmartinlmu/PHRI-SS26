@@ -167,7 +167,9 @@ class E4SensorNode(Node):
         # conversation; the arm could look at the entrance) and a level topic
         # would make each of them own the same edge detection.
         self._arrival_pub = self.create_publisher(Empty, "/user_arrived", 10)
-        self._last_seen = 0.0   # monotonic; 0 = never, so the first connect fires
+        self._last_seen = float("-inf")   # never seen. Not 0.0: monotonic() is
+                                          # uptime, so a launch within ARRIVAL_GAP
+                                          # of boot would mute the first connect
 
         # ponytail: BLE thread writes these, timer thread reads them. Plain
         # attribute assignment and deque.append are GIL-atomic; add a lock only
