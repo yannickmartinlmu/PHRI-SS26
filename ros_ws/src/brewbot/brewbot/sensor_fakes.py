@@ -13,8 +13,10 @@ from rclpy.node import Node
 from std_msgs.msg import Int32, Float32
 
 PRESETS = {
+    # No "hrv": nothing publishes /hrv on real hardware and the estimator no
+    # longer reads it. Faking a signal that cannot exist is how the dead
+    # fatigue branch went unnoticed.
     "hr":        ("/heartrate", Int32,   [60, 72, 85, 110, 72]),
-    "hrv":       ("/hrv",       Float32, [55.0, 48.0, 42.0, 50.0]),
     "eda":       ("/eda",       Float32, [0.5, 1.2, 3.0, 0.8]),
     "skin_temp": ("/skin_temp", Float32, [33.0, 34.5, 36.0, 31.0]),
     "motion":    ("/motion",    Float32, [0.1, 0.3, 2.0, 0.2]),
