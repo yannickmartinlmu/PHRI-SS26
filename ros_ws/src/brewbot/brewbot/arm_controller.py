@@ -63,6 +63,18 @@ ELMO_SET = "/elmo/id1/{axis}/position/set"
 ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 
+# Thumbs-up / thumbs-down from the wrist camera (arm_camera_gesture_recognizer).
+# The EVENT topic, not /gesture: /gesture is TRANSIENT_LOCAL and would hand a
+# fresh subscriber a thumbs-up from two minutes ago as if it were an answer.
+GESTURE_EVENT_TOPIC = "/brewbot/perception/arm_camera/gesture_event"
+# The recognizer only ever publishes these three; everything else in MediaPipe's
+# canned model is mapped to "none" and dropped there. So every event that arrives
+# is an answer, and thumbs_down needs no special case — see query_all_drinks.
+GESTURE_UP = "thumbs_up"        # bring this one
+GESTURE_DOWN = "thumbs_down"    # offer the next one
+GESTURE_PALM = "open_palm"      # stop asking altogether
+GESTURE_TIMEOUT = 10.0    # sec the arm holds the questioning pose waiting for an answer
+
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
 # dead transcriber parks the arm at the sink for a minute, not forever.
 WATER_CONFIRM_TIMEOUT = 60.0
@@ -143,14 +155,20 @@ POSES = {
     "look_at_user":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
     "look_at_user_question":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
     "gesture_coffee_1": [-1.9, -0.5, 1.9, 1.57, 1.8, -0.9],
-    "gesture_coffee_2": [-1.9, -0.6, 2.3, 1.57, 1.8, 0],
+    "gesture_coffee_2": [-1.9, -0.6, 2.3, 1.57, 1.8, -0.2],
     "gesture_water_1":  [-1.57, 0.2, 1.57, 0.0, 0.2, 1.57],
     "gesture_water_2":  [-1.57, -0.3, 2.3, 0.0, 0.8, 1.57],
     "gesture_tea_1":    [-1.57, -0.3, 1.57, 0.0, -0.6, 1.57],
     "gesture_tea_2":    [-1.57, -0.3, 1.57, 0.0, -0.3, 1.57],
-    "feed_beer_1":        [0, -1.57, -1.57, 0.0, 1, 1.57],
-    "feed_beer_2":      [0, -1.8, -1, 0.0, -1.2, 1.57]
+    "feed_beer_1":        [-1.57, -1.57, -1.57, 0.0, 1, 1.57],
+    "feed_beer_2":      [-1.57, -1.8, -1, 0.0, -1.2, 1.57]
     }
+
+GRIPPER_POSES = {
+    "coffee": 0.5,
+    "tea": 0.7,
+    "water": 0.0
+}
 
 
 def _check_poses():
@@ -165,9 +183,18 @@ def _check_poses():
     # Same idea for the hand-tuned gripper knobs: a typo jams the fingers.
     for name, pos in [("GRIPPER_OPEN", GRIPPER_OPEN), ("GRIPPER_CLOSED", GRIPPER_CLOSED)]:
         assert 0.0 <= pos <= GRIPPER_LIMIT, f"{name}={pos} outside 0.0..{GRIPPER_LIMIT}"
+    # Every drink on the menu must be mimeable, or do_gesture raises KeyError
+    # halfway through a motion instead of before the node starts.
+    for drink in MENU:
+        for suffix in ("_1", "_2"):
+            assert f"gesture_{drink}{suffix}" in POSES, \
+                f"MENU has '{drink}' but POSES has no gesture_{drink}{suffix}"
+        # .get default is deliberately out of range: missing and mistyped fail here.
+        assert 0.0 <= GRIPPER_POSES.get(drink, -1.0) <= GRIPPER_LIMIT, \
+            f"GRIPPER_POSES['{drink}'] missing or outside 0.0..{GRIPPER_LIMIT}"
 
 
-#_check_poses()
+_check_poses()
 
 
 def _closest_carriage(px):
@@ -260,6 +287,13 @@ class ArmController(Node):
 
         self._water_client = self.create_client(
             AskForWater, "/ask_for_water", callback_group=cb)
+
+        # The wrist camera is the eye. The Event is what ask_user blocks on from a
+        # skill thread while the executor spins; the string says which way it went.
+        self._answered = threading.Event()
+        self._gesture = ""
+        self.create_subscription(
+            String, GESTURE_EVENT_TOPIC, self._on_gesture, 10, callback_group=cb)
 
         self._busy = False
         self._server = ActionServer(
@@ -472,6 +506,14 @@ class ArmController(Node):
         if not (result.reached_goal or result.stalled):
             raise RuntimeError(f"gripper stuck at {result.position}")
 
+    def _on_gesture(self, msg):
+        # No filter: the recognizer publishes an event only for the three gestures
+        # above, and all three end the wait — sitting out the rest of the timeout
+        # after the user has already answered reads as a hang.
+        self.get_logger().info(f"[gesture] {msg.data}")
+        self._gesture = msg.data
+        self._answered.set()
+
     def _ask_for_water(self):
         # Hold the pose under the tap while interaction_manager talks to the user.
         # Blocking is fine: another thread spins, same as the action clients.
@@ -677,6 +719,45 @@ class ArmController(Node):
         if not result.success:
             raise RuntimeError(f"coffee machine failed: {result.status}")
         self.get_logger().info(f"[coffee] {result.status}")
+
+    def do_gesture(self, drink):
+        self._gripper(GRIPPER_POSES[drink])
+        pose = f"gesture_{drink}_"
+        for _ in range(2):
+            self.move_arm(pose + "1")
+            self.move_arm(pose + "2")
+        self.open_gripper() # For unobstructed viewing of user
+
+    def ask_user(self, timeout=GESTURE_TIMEOUT):
+        # Face the user, tilt the wrist ("well?"), then wait. The two moves are
+        # part of the question, not setup: the camera rides the wrist, so before
+        # look_at_user it is pointed at the kitchen and no thumb can be seen.
+        # Clearing here and not before the moves means a thumb given during the
+        # mime (camera facing away, nothing detectable) cannot leak in as an answer.
+        # Returns the gesture; "" = nobody answered. Three answers do not fit in a
+        # bool, and "" is the failure value everywhere else in the dialog layer.
+        self._answered.clear()
+        self._gesture = ""
+        self.move_arm("look_at_user")
+        self.move_arm("look_at_user_question")
+        self._answered.wait(float(timeout))   # return redundant: "" already says it
+        self.get_logger().info(f"[gesture] answer={self._gesture or 'none'}")
+        return self._gesture
+
+    def query_all_drinks(self, *drinks):
+        # menu order — put the estimator's likeliest drink first once wired.
+        for drink in drinks or MENU:
+            self.do_gesture(drink)
+            answer = self.ask_user()
+            if answer == GESTURE_UP:
+                return drink
+            if answer == GESTURE_PALM:
+                self.get_logger().info("[gesture] open palm — done offering")
+                break
+            # thumbs_down, silence, and anything a future recognizer adds: keep
+            # going. Falling through to the next drink is the safe default.
+        return ""
+
 
     def handover(self):
         self.move_rail(RAIL_HANDOVER)
