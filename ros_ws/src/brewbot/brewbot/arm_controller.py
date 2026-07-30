@@ -66,7 +66,7 @@ ELMO_GET = "/elmo/id1/{axis}/position/get"
 # Thumbs-up / thumbs-down from the wrist camera (arm_camera_gesture_recognizer).
 # The EVENT topic, not /gesture: /gesture is TRANSIENT_LOCAL and would hand a
 # fresh subscriber a thumbs-up from two minutes ago as if it were an answer.
-GESTURE_EVENT_TOPIC = "/brewbot/perception/arm_camera/gesture_event"
+GESTURE_EVENT_TOPIC = "/brewbot/perception/combined_camera/gesture"
 # The recognizer only ever publishes these three; everything else in MediaPipe's
 # canned model is mapped to "none" and dropped there. So every event that arrives
 # is an answer, and thumbs_down needs no special case — see query_all_drinks.

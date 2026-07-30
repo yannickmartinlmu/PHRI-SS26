@@ -1,11 +1,11 @@
 # MediaPipe gesture recognition for the Kinova arm-mounted RGB camera.
 #
 # The node deliberately recognizes only thumbs-up, thumbs-down and open_palm as application gestures, even though MediaPipes canned model knows more.
-
+#ros2 launch brewbot arm_camera_gestures.launch.py start_camera:=false
 "/arm_camera/gesture_recognizer":
   ros__parameters:
     image_topic: /camera/color/image_raw
-    output_namespace: /brewbot/perception/arm_camera
+    output_namespace: /brewbot/perception/combined_camera
 
     # The launch file normally overrides this with the installed package path.
     # An absolute path may also be supplied at launch time.

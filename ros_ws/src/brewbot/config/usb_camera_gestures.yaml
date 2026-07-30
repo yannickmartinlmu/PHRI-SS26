@@ -2,11 +2,11 @@
 # Reuses the existing arm_camera_gesture_recognizer executable.
 # The local recognizer implementation is expected to map:
 #   Thumb_Up, Thumb_Down and Open_Palm.
-
+#ros2 launch brewbot usb_camera_gestures.launch.py
 "/usb_camera/gesture_recognizer":
   ros__parameters:
     image_topic: /camera/camera/color/image_raw
-    output_namespace: /brewbot/perception/usb_camera
+    output_namespace: /brewbot/perception/combined_camera
 
     # The launch file overrides this with the installed package model path.
     model_path: ""
