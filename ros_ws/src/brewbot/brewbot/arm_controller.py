@@ -930,12 +930,9 @@ class ArmController(Node):
         # part of the question, not setup: the camera rides the wrist, so until it
         # points at the user no thumb can be seen — which is also why WHICH way it
         # turns has to be decided here, off the fixed cameras.
-        # Clearing here and not before the moves means a thumb given during the
-        # mime (camera facing away, nothing detectable) cannot leak in as an answer.
         # Returns the gesture; "" = nobody answered. Three answers do not fit in a
         # bool, and "" is the failure value everywhere else in the dialog layer.
-        self._answered.clear()
-        self._gesture = ""
+        #
         # The PC pose is the default and the tie-break — it is the one the arm has
         # always used, so it is the known-safe swing. Turning to the kitchen needs
         # positive evidence: someone there AND nobody at the PC. Two people, or a
@@ -945,6 +942,13 @@ class ArmController(Node):
             f"[gesture] asking towards {'kitchen' if at_kitchen else 'pc'}")
         for pose in ("look_at_user", "look_at_user_question"):
             self.move_arm(pose + "_kitchen" if at_kitchen else pose)
+        # Cleared AFTER the swing, not before: _on_gesture is ungated and sets
+        # _answered for every event on the topic, whenever it arrives. Clearing
+        # first meant any hand seen during the mime or the turn — or during a
+        # gesture test minutes earlier, since the flag is never cleared elsewhere —
+        # was still latched when we got here, and the wait returned instantly.
+        self._answered.clear()
+        self._gesture = ""
         self._answered.wait(float(timeout))   # return redundant: "" already says it
         self.get_logger().info(f"[gesture] answer={self._gesture or 'none'}")
         return self._gesture
