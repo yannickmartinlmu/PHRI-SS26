@@ -344,11 +344,16 @@ class SuggestionHandlerNode(Node):
                 # Waved off. They did not decline the drink, they declined being
                 # talked to — so the arm mimes the menu instead of us saying more.
                 self.get_logger().info("[GOAL] open palm — arm will mime the menu")
-            elif answer in DRINKS and answer != drink:
-                # Counter-offer: they already told us what they want, so asking
-                # "would you like a coffee?" back at them would just be rude.
-                self.get_logger().info(f"[GOAL] switched '{drink}' -> '{answer}'")
-                drink = answer
+            elif answer in DRINKS:
+                # Naming a drink is an acceptance. Usually it is the one we just
+                # offered — the classifier answers "water" as readily as "YES",
+                # and reading that as a refusal is how this branch used to lose
+                # every accepted offer. Naming a different one is a counter-offer:
+                # they already told us what they want, so asking "would you like a
+                # coffee?" back at them would just be rude.
+                if answer != drink:
+                    self.get_logger().info(f"[GOAL] switched '{drink}' -> '{answer}'")
+                    drink = answer
             elif answer != "YES":
                 self.get_logger().info("[GOAL] user declined")
                 goal_handle.succeed()

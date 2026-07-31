@@ -41,3 +41,4 @@ ros_ws/src/brewbot/models/
 
 # Local files
 info/pick cup fails.txt
+info/failed classify.txt
