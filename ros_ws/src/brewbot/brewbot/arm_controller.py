@@ -76,13 +76,17 @@ ELMO_GET = "/elmo/id1/{axis}/position/get"
 GESTURE_TIMEOUT = 10.0    # sec the arm holds the questioning pose waiting for an answer
 
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
-# dead transcriber parks the arm at the sink for a minute, not forever.
-WATER_CONFIRM_TIMEOUT = 60.0
+# dead transcriber parks the arm at the sink for two minutes, not forever. Long
+# because interaction_manager keeps re-listening now — a "wait" from the user costs
+# a round, not the whole goal, so the window has to cover an actual glass-filling.
+WATER_CONFIRM_TIMEOUT = 120.0
 
 # Waiting under a tap looks like a hang, so the wait escalates: first just hold,
 # then a wiggle, then the lab light. Both nudges are pure feedback and both fail
 # open — no light node, no planner, the water still happens.
-WIGGLE_AFTER = 20.0       # sec of silence before the arm nudges the user
+WIGGLE_EVERY = 15.0       # sec of silence before the arm nudges the user, and
+                          # again every 15s after that — one nudge in a 2-minute
+                          # window reads as the robot having quietly given up
 BLINK_AFTER = 40.0        # sec before the light joins in
 ANSWER_GRACE = 10.0       # sec past the timeout before we give up on the reply
                           # itself — interaction_manager stops listening at
@@ -326,11 +330,33 @@ def escalate(steps, done, now, sleep):
         action()
 
 
+# The sink wait as one flat schedule: a nudge every WIGGLE_EVERY sec for as long as
+# they stay quiet, the light once, and a last step that only ends the wait.
+def water_ladder(wiggle, blink):
+    end = WATER_CONFIRM_TIMEOUT + ANSWER_GRACE
+    nudges = [(WIGGLE_EVERY * i, wiggle)
+              for i in range(1, int(end // WIGGLE_EVERY) + 1)]
+    return sorted(nudges + [(BLINK_AFTER, blink), (end, lambda: None)],
+                  key=lambda step: step[0])
+
+
 def _check_escalation():
     for pose in WIGGLE_POSES:
         assert POSES.get(pose) is not None, f"WIGGLE_POSES: '{pose}' not teached"
-    assert WIGGLE_AFTER < BLINK_AFTER < WATER_CONFIRM_TIMEOUT, \
+    assert WIGGLE_EVERY < BLINK_AFTER < WATER_CONFIRM_TIMEOUT, \
         "escalation steps must be in ascending order"
+
+    # The real ladder, on fake actions: ascending, first nudge at WIGGLE_EVERY,
+    # one light, and long enough that the arm keeps nudging to the very end.
+    ladder = water_ladder("wiggle", "blink")
+    times = [at for at, _ in ladder]
+    assert times == sorted(times), times
+    assert times[0] == WIGGLE_EVERY and ladder[0][1] == "wiggle", ladder[0]
+    assert [a for _, a in ladder].count("blink") == 1, ladder
+    assert times[-1] == WATER_CONFIRM_TIMEOUT + ANSWER_GRACE, times[-1]
+    # 15, 30, 45 … — no silent gap where the arm just holds still for a minute.
+    nudges = [at for at, a in ladder if a == "wiggle"]
+    assert max(b - a for a, b in zip(nudges, nudges[1:])) == WIGGLE_EVERY, nudges
 
     # Fake clock: sleep() is the only thing that moves it, so this runs instantly.
     clock = [0.0]
@@ -662,9 +688,21 @@ class ArmController(Node):
         # FK directly, on purpose: this is a wrist twist inside a pose the arm is
         # already holding, so there is nothing for MoveIt to plan around — and FK
         # is the only backend that takes the duration, which is the whole point.
+        #
+        # Fail-open, like the light next to it: a nudge is pure feedback, and it
+        # must never abort a water goal with the glass still under the tap. The
+        # bounded wait is part of that — _send's own wait_for_server has no
+        # timeout, so a missing controller would park the whole escalation here
+        # and the light and the give-up step would never fire either.
+        if not self._fk_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().warn("[water] no trajectory controller — no wiggle")
+            return
         self.get_logger().info("[water] nudging the user")
-        for pose in WIGGLE_POSES:
-            self._move_arm_fk(POSES[pose], WIGGLE_MOVE_TIME)
+        try:
+            for pose in WIGGLE_POSES:
+                self._move_arm_fk(POSES[pose], WIGGLE_MOVE_TIME)
+        except RuntimeError as error:
+            self.get_logger().warn(f"[water] wiggle failed: {error}")
 
     def _blink(self, on):
         # Fail-open like the prompt itself, and fire-and-forget: nothing downstream
@@ -693,9 +731,7 @@ class ArmController(Node):
         start = time.monotonic()
         try:
             escalate(
-                [(WIGGLE_AFTER, self._wiggle),
-                 (BLINK_AFTER, lambda: self._blink(True)),
-                 (WATER_CONFIRM_TIMEOUT + ANSWER_GRACE, lambda: None)],
+                water_ladder(self._wiggle, lambda: self._blink(True)),
                 future.done,
                 lambda: time.monotonic() - start,
                 time.sleep,

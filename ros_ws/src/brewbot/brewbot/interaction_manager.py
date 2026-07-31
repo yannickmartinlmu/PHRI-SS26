@@ -241,8 +241,11 @@ class SuggestionHandlerNode(Node):
             self._gesture_answer = None
             self._gestures = gesture_answers
 
+            # "" = listen without speaking. A re-listen after a WAIT would
+            # otherwise read the same sentence at someone who is already pouring.
             self.get_logger().info(f"[ASK] TTS: '{text}' (up to {timeout}s)")
-            self._tts_pub.publish(String(data=text))
+            if text:
+                self._tts_pub.publish(String(data=text))
 
             if not self._speech_event.wait(timeout=timeout):
                 self.get_logger().warn("[ASK] timed out — no response")
@@ -311,16 +314,26 @@ class SuggestionHandlerNode(Node):
         self._tts_pub.publish(String(data=WELCOME.format(name=self._user_name)))
 
     def _on_ask_for_water(self, request, response):
-        # WAIT and "" both give up here, which is the wrong direction for a
-        # misheard word — the real guard against a half-filled glass is the
-        # caller's timeout, not this branch.
+        # WAIT means wait. _ask ends at the FIRST thing it hears, and at a running
+        # tap that is rarely the answer — one word of background chatter used to
+        # end the whole prompt and put a half-filled glass back. So a WAIT costs a
+        # round and nothing else; only the caller's timeout ends this.
+        # "" still gives up: that is the mouth being busy or the classifier being
+        # down, and re-asking into either would spin, not listen.
         # A raised hand means "done" here, palm or thumb alike — someone mid-pour
         # is holding a glass under a tap and is not going to free a hand to wave
         # at the robot, so any hand at all is them finishing, not interrupting.
-        response.confirmed = (
-            self._ask(WATER_PROMPT, request.timeout, WATER_SYSTEM,
-                      ("DONE", "WAIT"), WATER_GESTURES) == "DONE"
-        )
+        deadline = time.monotonic() + request.timeout
+        prompt = WATER_PROMPT
+        response.confirmed = False
+        while (remaining := deadline - time.monotonic()) > 0:
+            answer = self._ask(prompt, remaining, WATER_SYSTEM,
+                               ("DONE", "WAIT"), WATER_GESTURES)
+            if answer != "WAIT":
+                response.confirmed = answer == "DONE"
+                break
+            self.get_logger().info("[WATER] not done yet — still listening")
+            prompt = ""   # already said once; the arm's wiggle carries the rest
         if not response.confirmed:
             self._tts_pub.publish(String(data=WATER_GIVEUP))
         return response
