@@ -25,9 +25,14 @@ def generate_launch_description():
     fake = LaunchConfiguration("fake_sensors")
     return LaunchDescription([
         DeclareLaunchArgument("fake_sensors", default_value="true"),
+        # Default is the lab PC; llm_host:=http://localhost:11434 for a laptop
+        # running its own ollama. No trailing slash — ollama 307s on `//api/...`
+        # and urllib will not follow a 307 on POST.
+        DeclareLaunchArgument("llm_host", default_value="http://10.163.18.109:11434"),
 
         Node(package="brewbot", executable="asr_vosk",            name="asr_vosk"),
-        Node(package="brewbot", executable="llm",                 name="llm"),
+        Node(package="brewbot", executable="llm",                 name="llm",
+             parameters=[{"host": LaunchConfiguration("llm_host")}]),
         Node(package="brewbot", executable="tts",                 name="tts"),
         Node(package="brewbot", executable="light_actuator",      name="light_actuator"),
         Node(package="brewbot", executable="state_estimator",     name="state_estimator"),

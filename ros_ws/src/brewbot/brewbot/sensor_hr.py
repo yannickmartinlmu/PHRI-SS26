@@ -33,7 +33,7 @@ class HeartrateNode(Node):
         msg = Int32()
         msg.data = hr
         self._pub.publish(msg)
-        self.get_logger().info(f"Heart rate: {hr} BPM")
+        # self.get_logger().info(f"Heart rate: {hr} BPM")
 
     def _run_ble_loop(self):
         asyncio.run(self._ble_task())
