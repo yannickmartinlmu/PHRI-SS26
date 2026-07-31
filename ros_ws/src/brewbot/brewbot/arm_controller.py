@@ -171,9 +171,13 @@ POSES = {
     "apriltag":     [-2, -0.5, 1.3, 1.9, -2, 0],
     "look_inside_cup":  [0, -1.57, 0, 0.0, -1.4, 0],
     "find_cup_pose": [-1.57, -2.3, -2.3, 0, 0, 1.57],
+    "trashcan":     [0.4, 0.2, 1.77, 0.0, 0.0, 1.57], # rail 0.8
     # ------------- Drink Gestures -------------
-    "look_at_user":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
-    "look_at_user_question":     [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
+    "look_at_user":                  [-0.1, 0.0, 1.77, 0.0, -0.2, 1.57],
+    "look_at_user_question":         [-0.1, 0.0, 1.77, 0.0, -0.2, 1.4],  # intended as a slight tilting-head move after taking the position. 
+    "look_at_user_kitchen":          [-2, 0.0, 1.77, 0.0, -0.2, 1.57],
+    "look_at_user_question_kitchen": [-2, 0.0, 1.77, 0.0, -0.2, 1.4],
+    "look_at_entrance":               [-2, 0.0, 1.57, -1.57, 0.6, 3.14],
     "gesture_coffee_1": [-1.9, -0.5, 1.9, 1.57, 1.8, -0.9],
     "gesture_coffee_2": [-1.9, -0.6, 2.3, 1.57, 1.8, -0.2],
     "gesture_water_1":  [-1.57, 0.2, 1.57, 0.0, 0.2, 1.57],
@@ -183,14 +187,6 @@ POSES = {
     "feed_beer_1":        [-1.57, -1.57, -1.57, 0.0, 1, 1.57],
     "feed_beer_2":      [-1.57, -1.8, -1, 0.0, -1.2, 1.57]
     }
-
-# The user is either at the PC desk or in the kitchen. look_at_user already faces
-# the PC, so the kitchen is the derived one — only the base yaw differs, which is
-# ONE number to teach in the lab instead of twelve.
-# ponytail: yaw swap only. Teach full poses if the kitchen needs a different tilt.
-LOOK_KITCHEN_JOINT1 = -2.0   # rad, absolute — approximate, verify on the real arm
-for _name in ("look_at_user", "look_at_user_question"):
-    POSES[_name + "_kitchen"] = [LOOK_KITCHEN_JOINT1] + POSES[_name][1:]
 
 # Which fixed camera can see a person. NOT the arm camera: it rides the wrist,
 # so what it sees says where the arm is pointed, not where the user is.
@@ -917,6 +913,7 @@ class ArmController(Node):
 
     def query_all_drinks(self, *drinks):
         # menu order — put the estimator's likeliest drink first once wired.
+        self.move_rail(0.8)
         for drink in drinks or MENU:
             self.do_gesture(drink)
             answer = self.ask_user()
