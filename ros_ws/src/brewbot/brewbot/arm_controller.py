@@ -405,6 +405,13 @@ class ArmController(Node):
         # ...but the eye has to be pointed the right way first. False until a
         # recognizer says otherwise, which degrades to "assume kitchen" — the
         # direction the arm looked before any of this existed.
+        # Speech as a bare *cue*, not an answer: the scripted shots only need to
+        # know the human stopped talking. interaction_manager owns the real
+        # ASR -> LLM path; this is deliberately wording-blind.
+        self._heard = threading.Event()
+        self.create_subscription(
+            String, "/speech_text", lambda _msg: self._heard.set(), 10, callback_group=cb)
+
         self._person = {where: False for where in PERSON_TOPICS}
         for where, topic in PERSON_TOPICS.items():
             self.create_subscription(
@@ -1025,6 +1032,28 @@ class ArmController(Node):
         self.open_gripper()
         self.move_lift(LIFT_HOME)
         self.tuck()
+
+    def shot_2(self):
+        self.move_arm("tuck")
+        time.sleep(2)
+        self.move_arm("look_at_user")
+        time.sleep(0.5)
+        self.move_arm("look_at_user_question") 
+
+    def shot_3(self):
+        # 2001 beat: the offer in the house voice, the refusal in HAL's. The
+        # "hal:" prefix is what tts.py switches models on. Lights go red by hand.
+        #self.move_arm("look_at_user_question")
+        self._tts_pub.publish(String(data="Hello David, would you like a cup of water?"))
+        self._heard.clear()
+        # Any utterance is the cue. The timeout fires the refusal anyway — a dead
+        # mic must not wedge the shot mid-take.
+        self._heard.wait(timeout=15.0)
+        time.sleep(2.0)   # let David finish his tail before HAL steps on it
+        #self.move_arm("look_at_user")
+        self._tts_pub.publish(String(
+            data="hal: I'm sorry Dave. I'm afraid I can't do that."))
+        #self.close_gripper()
 
 
     # ---- orchestration: BringDrink = skills in sequence ----

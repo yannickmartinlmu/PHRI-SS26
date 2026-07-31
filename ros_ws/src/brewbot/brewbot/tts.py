@@ -13,8 +13,8 @@ from std_msgs.msg import Bool, Empty, String
 # --- espeak-ng backend ---
 # Install: sudo apt install espeak-ng
 
-def speak_espeak(text: str):
-    subprocess.run(["espeak-ng", text], check=True, capture_output=True)
+def speak_espeak(text: str, voice: str = ""):
+    subprocess.run(["espeak-ng", text], check=True, capture_output=True)  # one voice only
 
 
 # --- Piper backend ---
@@ -22,9 +22,15 @@ def speak_espeak(text: str):
 # Models:  https://github.com/rhasspy/piper/blob/master/VOICES.md
 # Download a model .onnx + .onnx.json, set PIPER_MODEL_PATH below
 
-PIPER_MODEL_PATH = os.path.expanduser("~/piper/en_GB-alan-medium.onnx")
+# The voice travels with the text ("hal: I'm sorry Dave"), not as a separate
+# /tts_voice topic: the speak queue is async, so a set-voice message would race
+# with lines already queued and hand the wrong voice the wrong sentence.
+VOICES = {
+    "": os.path.expanduser("~/piper/en_GB-alan-medium.onnx"),
+    "hal": os.path.expanduser("~/piper/hal.onnx"),
+}
 
-_piper_voice = None
+_piper_voices = {}   # name -> loaded PiperVoice; loaded on first use, kept
 
 _playing = None   # the aplay child, so /tts_stop can cut a sentence short
 
@@ -38,11 +44,12 @@ def stop():
         _playing.terminate()
 
 
-def speak_piper(text: str):
-    global _piper_voice, _playing
-    if _piper_voice is None:
+def speak_piper(text: str, voice: str = ""):
+    global _playing
+    if voice not in _piper_voices:
         from piper import PiperVoice
-        _piper_voice = PiperVoice.load(PIPER_MODEL_PATH)
+        _piper_voices[voice] = PiperVoice.load(VOICES[voice])
+    _piper_voice = _piper_voices[voice]
 
     import wave
     import numpy as np
@@ -120,11 +127,15 @@ class TtsNode(Node):
     def _speak_worker(self):
         while True:
             text = self._queue.get()
+            # "hal: line" picks a voice; a bare colon anywhere else is left alone
+            # because the prefix has to match a known voice name.
+            name, _, rest = text.partition(":")
+            voice, text = (name, rest.strip()) if name in VOICES and name else ("", text)
             # True before synthesis, not just before playback: muting early is free,
             # unmuting early is the whole bug.
             self._speaking_pub.publish(Bool(data=True))
             try:
-                _speak(text)
+                _speak(text, voice)
             except FileNotFoundError as e:
                 self.get_logger().error(f"TTS binary not found: {e}")
             except Exception as e:
