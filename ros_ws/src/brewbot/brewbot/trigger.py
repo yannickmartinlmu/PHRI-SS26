@@ -9,6 +9,10 @@ the one that initiates. Four ways in, all landing on _fire():
   - /user_arrived: someone put the E4 on (see sensor_e4)
   - /user_spike: the estimator's reading crossed into "worth an offer"
 
+All of them are dead until /user_arrived lands — nobody is there to talk to
+before that. Typing "arrived" publishes it, same message the E4 sends, so the
+arm looks up and the manager welcomes exactly as it would with a real band.
+
 Keeping the policy here is why the estimator stays a passive service — swap
 this node for an arrival/gesture trigger and nothing downstream changes.
 """
@@ -50,10 +54,18 @@ class TriggerNode(Node):
         # stack blocked threads behind a user who is still being talked to.
         self._busy = False
 
+        # ponytail: one-way latch — no /user_left exists anywhere in the package,
+        # so re-arming has nothing to hang off. Reset it here if one shows up.
+        self._arrived = False
+
+        # Own publication, own subscription: "arrived" from the keyboard goes out
+        # on the wire so arm_controller and interaction_manager see it too.
+        self._arrival_pub = self.create_publisher(Empty, "/user_arrived", 10)
+
         # Reentrant + _busy: _fire blocks here for the whole conversation, and
         # the estimator query it makes is a service call on this same executor.
         self.create_subscription(
-            Empty, "/user_arrived", lambda _: self._fire(), 10, callback_group=cb
+            Empty, "/user_arrived", self._on_arrival, 10, callback_group=cb
         )
         # Empty, not the drink: _fire() re-queries so the greeting still gets
         # the `reason` string. One redundant service call, no new interface.
@@ -69,8 +81,9 @@ class TriggerNode(Node):
         threading.Thread(target=self._keyboard, daemon=True).start()
 
         self.get_logger().info(
-            "Trigger ready — /user_arrived, Enter to ask the estimator, or type "
-            "a drink (optionally + a reason, e.g. 'water hot'): " + ", ".join(MENU)
+            "Trigger ready — waiting for /user_arrived (type 'arrived' to fake it). "
+            "Then Enter to ask the estimator, or type a drink (optionally + a "
+            "reason, e.g. 'water hot'): " + ", ".join(MENU)
         )
 
     def _keyboard(self):
@@ -78,11 +91,23 @@ class TriggerNode(Node):
         # reason — free text, it only ever lands in the LLM greeting prompt.
         for line in sys.stdin:
             drink, _, reason = line.strip().partition(" ")
+            if drink == "arrived":
+                # Publish rather than set the latch: _on_arrival runs off the
+                # subscription, so the fake path is the real path.
+                self._arrival_pub.publish(Empty())
+                continue
             self._fire(drink or None, reason.strip())
+
+    def _on_arrival(self, _msg):
+        self._arrived = True
+        self._fire()
 
     # reason defaults empty: a hand-typed drink has no state behind it unless
     # the typist supplied one.
     def _fire(self, drink=None, reason=""):
+        if not self._arrived:
+            self.get_logger().warn("[trigger] nobody has arrived yet — ignored")
+            return
         if self._busy:
             self.get_logger().warn("[trigger] already running — ignored")
             return
