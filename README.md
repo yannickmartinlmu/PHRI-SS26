@@ -89,7 +89,8 @@ ros2 launch brewbot sim.launch.py                        # arm sim
 ros2 launch brewbot interaction.launch.py                # conversation, fake sensors
 ros2 launch brewbot full.launch.py sim_arm:=true         # full sim
 ros2 launch brewbot sensors.launch.py                    # sensor tuning on-site
-ros2 launch brewbot full.launch.py fake_sensors:=false   # on-site / lab
+ros2 launch brewbot full.launch.py sensors:=real         # on-site / lab
+ros2 launch brewbot full.launch.py arm:=false sensors:=none   # drive the arm controller by hand
 ros2 run brewbot trigger                                 # always its own terminal
 ```
 #### Use GPU-Rendering

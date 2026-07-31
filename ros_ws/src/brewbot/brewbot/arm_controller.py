@@ -374,6 +374,11 @@ class ArmController(Node):
 
         self._coffee_client = ActionClient(
             self, DispenseDrink, "dispense_drink", callback_group=cb)
+        # use_coffee_machine:=false mimes the pour instead of brewing — the arm
+        # says so out loud and holds the pose long enough for a human to fake it.
+        self.use_coffee_machine = self.declare_parameter("use_coffee_machine", True).value
+        self.coffee_skip_wait = self.declare_parameter("coffee_skip_wait", 10.0).value
+        self._tts_pub = self.create_publisher(String, "/tts_text", 10)
 
         # Both arm backends stay wired; the parameter only picks which one sends.
         self.use_moveit = self.declare_parameter("use_moveit", True).value
@@ -880,19 +885,36 @@ class ArmController(Node):
     def fill(self, drink):
         self.move_arm(f"fill_{drink}")
 
+    def _ask_human_to_pour(self, drink, why):
+        # FAIL-OPEN, like _ask_for_water: no machine must not mean no drink. The arm
+        # holds the pose under the spout, says out loud that it is not brewing, and
+        # gives a human coffee_skip_wait seconds to do it by hand.
+        self.get_logger().warn(f"[coffee] not brewing {drink}: {why}")
+        self._tts_pub.publish(String(
+            data=f"I am not starting the machine right now. "
+                 f"Please pour the {drink.replace('_', ' ')} yourself."))
+        time.sleep(float(self.coffee_skip_wait))
+
     def _request_coffee_machine(self, drink):
+        if not self.use_coffee_machine:
+            return self._ask_human_to_pour(drink, "use_coffee_machine:=false")
         if not self._coffee_client.wait_for_server(timeout_sec=5.0):
-            raise RuntimeError(
-                "/dispense_drink unavailable - is coffee_machine_actuator up?"
-            )
+            return self._ask_human_to_pour(
+                drink, "/dispense_drink unavailable — is coffee_machine_actuator up?")
+
         self.get_logger().info(f"[coffee] dispensing -> {drink}")
         goal = DispenseDrink.Goal(
             beverage=str(drink),
             reason="arm at fill_coffee",
         )
-        result = self._send(self._coffee_client, goal)
+        try:
+            result = self._send(self._coffee_client, goal)
+        except Exception as e:
+            # Rejected goal, Home Assistant down, machine busy — all the same to the
+            # user: the glass still comes, it just needs a pair of hands.
+            return self._ask_human_to_pour(drink, str(e))
         if not result.success:
-            raise RuntimeError(f"coffee machine failed: {result.status}")
+            return self._ask_human_to_pour(drink, result.status)
         self.get_logger().info(f"[coffee] {result.status}")
 
     def do_gesture(self, drink):
