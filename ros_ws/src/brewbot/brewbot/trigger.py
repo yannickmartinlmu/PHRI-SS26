@@ -3,7 +3,8 @@
 
 state_estimator answers what the user needs but never initiates; this node is
 the one that initiates. Four ways in, all landing on _fire():
-  - keyboard: Enter (ask the estimator) or a drink name (skip it, force one)
+  - keyboard: Enter (ask the estimator), a drink name (skip it, force one), or
+    a drink and a reason ("water hot") to force the greeting's angle too
   - auto:=true: the same query on a 60s loop
   - /user_arrived: someone put the E4 on (see sensor_e4)
   - /user_spike: the estimator's reading crossed into "worth an offer"
@@ -68,21 +69,24 @@ class TriggerNode(Node):
         threading.Thread(target=self._keyboard, daemon=True).start()
 
         self.get_logger().info(
-            "Trigger ready — /user_arrived, Enter to ask the estimator, "
-            "or type one of: " + ", ".join(MENU)
+            "Trigger ready — /user_arrived, Enter to ask the estimator, or type "
+            "a drink (optionally + a reason, e.g. 'water hot'): " + ", ".join(MENU)
         )
 
     def _keyboard(self):
-        # Line-based, not raw keys
+        # Line-based, not raw keys. First word is the drink, the rest is the
+        # reason — free text, it only ever lands in the LLM greeting prompt.
         for line in sys.stdin:
-            self._fire(line.strip() or None)
+            drink, _, reason = line.strip().partition(" ")
+            self._fire(drink or None, reason.strip())
 
-    def _fire(self, drink=None):
+    # reason defaults empty: a hand-typed drink has no state behind it unless
+    # the typist supplied one.
+    def _fire(self, drink=None, reason=""):
         if self._busy:
             self.get_logger().warn("[trigger] already running — ignored")
             return
         self._busy = True
-        reason = ""   # a hand-typed drink has no state behind it
         try:
             if drink is None:
                 if not self._state_client.wait_for_service(timeout_sec=2.0):
