@@ -60,6 +60,14 @@ WATER_SYSTEM = (
 
 GREET_SYSTEM = ""   # "" = the llm node's barista persona, which is the point here
 
+# Said on /user_arrived, before any of the above. Canned, not generated: this is
+# the one moment we KNOW they just walked in, and a greeting that is identical
+# every time reads as a ritual rather than as a robot repeating itself. It also
+# fires when the estimator has nothing to offer, which on arrival is most of the
+# time — eda_base is seeded from the first sample, so no arousal branch can be
+# true seconds after the band connects.
+WELCOME = "Welcome back, {name}."
+
 WATER_PROMPT = ("I am ready. Please fill as much water as you like, "
                 "then tell me when you are done.")
 WATER_GIVEUP = "No answer. I will put the glass back."
@@ -129,6 +137,13 @@ class SuggestionHandlerNode(Node):
         self.declare_parameter("user_name", "David")
         self._user_name = (
             self.get_parameter("user_name").get_parameter_value().string_value
+        )
+
+        # Greeting and offering are separate events now. arm_controller listens to
+        # the same topic and turns to the entrance; neither waits for the other,
+        # because speaking while the arm turns is fine in either order.
+        self.create_subscription(
+            Empty, "/user_arrived", self._on_arrival, 10, callback_group=cb
         )
 
         self._bring_client = ActionClient(
@@ -262,15 +277,38 @@ class SuggestionHandlerNode(Node):
         # "" on any failure, and the caller falls back to the canned question —
         # a robot that goes silent because the lab PC is down is worse than a
         # robot that sounds a bit robotic.
+        #
+        # No state, no call. A hand-typed drink has nothing behind it, and asked
+        # to greet without one the model does not omit the clause — it makes a
+        # state up ("I've noticed that you are tired"). Measured, not feared.
+        # Falling through to the caller's canned question is both cheaper and
+        # the only honest sentence available.
+        if not reason:
+            return ""
         line = self._llm(
-            f"Facts: name={self._user_name or 'unknown'}, "
-            f"state={reason or 'unknown'}, offer={drink}. "
-            "Greet the person and offer them that drink, ending in a question.",
+            "\n".join((
+                f"name: {self._user_name}",
+                f"drink to offer: {drink}",
+                f"what you noticed about them: {reason}",
+                "Write the greeting.",
+            )),
             GREET_SYSTEM,
         )
         if not line:
             self.get_logger().warn("[GREET] no line from LLM — using canned")
         return line
+
+    def _on_arrival(self, _msg):
+        # Straight to the mouth, not through _ask: nothing is being asked, so
+        # there is no answer to wait for and no reason to take the lock. If an
+        # ask is already running, skipping is right — trigger will follow this
+        # event with an offer anyway, and two openings talking over each other
+        # is worse than none.
+        if self._mouth.locked():
+            self.get_logger().info("[ARRIVAL] mid-conversation — no welcome")
+            return
+        self.get_logger().info("[ARRIVAL] welcoming")
+        self._tts_pub.publish(String(data=WELCOME.format(name=self._user_name)))
 
     def _on_ask_for_water(self, request, response):
         # WAIT and "" both give up here, which is the wrong direction for a
@@ -381,12 +419,34 @@ def demo(host="http://10.163.18.109:11434", model="llama3.2"):
     # overheard lab chatter must not stop the pour
     assert ask(w, "so then I told him the build was broken anyway",
                WATER_SYSTEM, water_labels) == "WAIT"
+
+    # The greeting has no label to match, so the check is on its shape. Non-zero
+    # temperature means the wording moves between runs; only the invariants are
+    # asserted. Dana/tea share nothing with the exemplar in llm.SYSTEM_PROMPT
+    # (Sam/thirsty/juice), so a copied word is a fabricated fact, which is the
+    # failure that actually reaches the user.
+    for reason, drink in (("hot", "water"), ("stressed", "tea")):
+        line = generate(host, model, "\n".join((
+            "name: Dana",
+            f"drink to offer: {drink}",
+            f"what you noticed about them: {reason}",
+            "Write the greeting.",
+        )), GREET_SYSTEM, 30.0)
+        low = line.lower()
+        assert len(line.split()) <= 25, f"greeting too long: {line}"
+        assert '"' not in line, f"greeting is quoted: {line}"
+        assert "dana" in low and drink in low, f"greeting lost a fact: {line}"
+        assert reason in low, f"greeting lost the state: {line}"
+        assert "sam" not in low and "juice" not in low, \
+            f"greeting leaked the example: {line}"
     print("prompt self-check passed")
 
 
 def main():
     if "--selfcheck" in sys.argv:
-        demo()
+        # Trailing args are host, then model — the default points at the lab PC,
+        # and a laptop with its own Ollama should not have to edit the file.
+        demo(*sys.argv[sys.argv.index("--selfcheck") + 1:])
         return
     rclpy.init()
     node = SuggestionHandlerNode()

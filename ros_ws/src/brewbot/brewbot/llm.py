@@ -20,18 +20,39 @@ import urllib.request
 from brewbot_interfaces.srv import AskLLM
 
 
+# The example is the instruction. Told to "be brief" a 3B model writes 30 words
+# of ad copy — "our specialty blend, roasted locally" — because nothing forbids
+# inventing. Shown one sentence in the target shape it copies the shape and
+# stops. The name and state in the example (Sam/thirsty/juice) match no real
+# case on purpose, so a leak is obvious in the logs rather than plausible.
+# Callers must not send a state they did not measure: with the slot empty the
+# model fills it, and "I've noticed that you are tired" is a fabricated sensor
+# reading. See interaction_manager._greet, which declines to call at all.
 SYSTEM_PROMPT = (
-    "You are BrewBot, a friendly robot barista in a university lab. "
-    "Answer in one or two short spoken sentences. No lists, no markdown."
+    "You are BrewBot, a robot barista in a university lab. "
+    "Greet the person by name, say what you noticed about them, then offer "
+    "the drink as a question. Exactly this shape:\n"
+    "Hello Sam. I've noticed that you are thirsty. "
+    "Would you like a cup of juice?\n"
+    "At most 25 words. Use ONLY the facts given — never invent a state, "
+    "a name or a drink. No quotation marks, no lists, no markdown, no emoji."
 )
 
 # Temperature 0: the same utterance must classify the same way every time, or
-# debugging a bad interaction is guesswork. Costs nothing for the chat path —
-# a reproducible barista is a feature during demos.
+# debugging a bad interaction is guesswork.
 # keep_alive holds the model in the lab PC's memory, so only the very first
 # request after an ollama restart pays the load; num_predict is the hard length
 # cap that keeps TTS from reading an essay.
 OPTIONS = {"temperature": 0, "num_predict": 60}
+
+# The greeting is the one call that WANTS to vary: a spike can fire three times
+# in a session and the same sentence three times is what makes a robot sound
+# broken. Measured on llama3.2 — 0.6 rewords, 0.9 starts narrating in the third
+# person ("David appears fatigued and in need of refreshment").
+# ponytail: keyed off an empty `system`, which is already this service's "you
+# are the barista, not a classifier" switch. A real per-call options field means
+# changing AskLLM.srv, which is a brewbot_interfaces rebuild.
+GREET_OPTIONS = {"temperature": 0.6, "num_predict": 40}
 KEEP_ALIVE = "30m"
 
 
@@ -43,17 +64,21 @@ def generate(host, model, prompt, system, timeout):
         data=json.dumps({
             "model": model,
             "prompt": prompt,
-            "system": system,
+            # Empty means "you are the barista" — resolved HERE, not at the
+            # caller, because the options below read the same emptiness.
+            "system": system or SYSTEM_PROMPT,
             "stream": False,
             "keep_alive": KEEP_ALIVE,
-            "options": OPTIONS,
+            "options": OPTIONS if system else GREET_OPTIONS,
         }).encode(),
         headers={"Content-Type": "application/json"},
     )
     # stream:False means Ollama sends one body at the end, so this read
     # blocks for the whole generation — timeout has to cover all of it.
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())["response"].strip()
+        # Small models wrap spoken lines in quotes however firmly the prompt
+        # says not to, and TTS reads them out. Stripping is not a suggestion.
+        return json.loads(r.read())["response"].strip().strip('"').strip()
 
 
 class LLMNode(Node):
@@ -84,7 +109,7 @@ class LLMNode(Node):
     def _warmup(self):
         self._warmup_timer.cancel()
         try:
-            self._generate("hi", SYSTEM_PROMPT)
+            self._generate("hi", "")
             self.get_logger().info("model warm")
         except Exception as e:
             # Not fatal — the lab PC may come up after us. Calls just pay the
@@ -98,9 +123,7 @@ class LLMNode(Node):
             return response
 
         try:
-            response.response = self._generate(
-                request.prompt, request.system or SYSTEM_PROMPT
-            )
+            response.response = self._generate(request.prompt, request.system)
         except Exception as e:
             # Caller only needs "no answer"; the why stays in this log line.
             self.get_logger().error(f"generation failed: {e}")

@@ -30,7 +30,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
 
-from std_msgs.msg import Bool, Float32, String
+from std_msgs.msg import Bool, Empty, Float32, String
 from std_srvs.srv import SetBool
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from moveit_msgs.action import MoveGroup
@@ -414,6 +414,12 @@ class ArmController(Node):
             goal_callback=self._on_goal, callback_group=cb
         )
 
+        # Look up when someone walks in. interaction_manager says the words on
+        # this same event; the two halves are independent on purpose.
+        self.create_subscription(
+            Empty, "/user_arrived", self._on_arrival, 10, callback_group=cb
+        )
+
         # Kitchen collision scene: re-publish after every Elmo move + seed once at startup.
         # base_link rides the rail and MoveIt won't re-transform a cached scene. Best-effort.
         if build_scene is not None:
@@ -465,6 +471,16 @@ class ArmController(Node):
             return GoalResponse.REJECT
         self._busy = True
         return GoalResponse.ACCEPT
+
+    def _on_arrival(self, _msg):
+        # Busy means a drink is in progress — quite possibly a full glass under
+        # the tap. Swinging to the entrance mid-fetch is the one way this can do
+        # damage, and an arrival while the arm is already serving someone is a
+        # reconnecting E4 far more often than a person. Drop it, don't queue it.
+        if self._busy:
+            self.get_logger().info("[arrival] busy — not looking up")
+            return
+        self.move_arm("look_at_entrance")
 
     def _on_elmo(self, axis, msg):
         self._elmo_pos[axis] = msg.data
