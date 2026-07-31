@@ -986,6 +986,12 @@ class ArmController(Node):
         self._ask_for_water()
         self.handover()
 
+    def reset_pose(self):
+        # DANGEROUS Move without tuck. use with CAUTION!
+        self._move_elmo("carriage", 0.8)
+        self.move_lift(LIFT_HOME)
+        self.move_arm("home")
+
     def coffee_machine_approach(self):
         self.move_rail(RAIL_KITCHEN + 0.1)
         self.move_lift(LIFT_HOME + 0.01)
