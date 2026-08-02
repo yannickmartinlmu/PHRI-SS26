@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Interaction manager — owns the mouth (TTS) and the ear (ASR) as one resource.
+"""Interaction manager — owns TTS+ASR as one resource; _ask() is the dialog leaf.
 
-Two layers, same split as arm_controller:
-  _ask(text, timeout)  the dialog leaf: say it, wait, classify. One at a time.
-  action/service       orchestration: what to say and what to do with the answer.
+Never hold the mouth across an arm call: the arm calls /ask_for_water mid-motion
+while _execute is parked waiting on BringDrink.
 
-Both layers are reachable from other nodes, so the leaf carries its own lock.
-INVARIANT: never hold the mouth across an arm call — arm_controller calls
-/ask_for_water mid-motion while _execute is parked waiting on BringDrink.
-
-To query the Interaction Manager from a terminal, use
-ros2 action send_goal -f /suggest_drink brewbot_interfaces/action/SuggestDrink "{drink: 'water'}"
+  ros2 action send_goal -f /suggest_drink brewbot_interfaces/action/SuggestDrink "{drink: 'water'}"
 """
 
 import sys
@@ -31,19 +25,14 @@ from brewbot import gestures
 
 SPEECH_TIMEOUT = 30.0
 
-# The caller's timeout bounds the LISTENING. This bounds the LLM, which is a
-# separate way to hang — and _ask holds the mouth throughout, so an unbounded wait
-# here would wedge every later ask, not just this one. A warm generation is ~2s.
+# Bounds the LLM, not the listening; _ask holds the mouth throughout, so an
+# unbounded wait here wedges every later ask. A warm generation is ~2s.
 LLM_TIMEOUT = 10.0
 
-# What the user may be offered, and what a counter-offer may name. Same vocabulary
-# the estimator suggests and the arm routes — see brewbot/drinks.py, which is the
-# only place a drink gets added.
+# What may be offered or counter-offered. drinks.py is the only place to add one.
 DRINKS = tuple(MENU)
 
-# Classifier personas. The node's own persona is deliberately overridden: these
-# calls want one bare token, not a chatty barista. Both name their exact label
-# set, and every caller still validates — an LLM answers off-menu now and then.
+# Classifier personas — one bare token, not the barista. Callers still validate.
 DRINK_SYSTEM = (
     "You decide how a person replied to a drink offer. Answer with ONE of: "
     "YES if they accepted, NO if they declined and named nothing else, or the "
@@ -58,35 +47,27 @@ WATER_SYSTEM = (
     "background chatter that was not addressed to the robot. Output only that."
 )
 
-GREET_SYSTEM = ""   # "" = the llm node's barista persona, which is the point here
+GREET_SYSTEM = ""   # "" = the llm node's barista persona
 
-# Said on /user_arrived, before any of the above. Canned, not generated: this is
-# the one moment we KNOW they just walked in, and a greeting that is identical
-# every time reads as a ritual rather than as a robot repeating itself. It also
-# fires when the estimator has nothing to offer, which on arrival is most of the
-# time — eda_base is seeded from the first sample, so no arousal branch can be
-# true seconds after the band connects.
+# Canned on purpose: identical every time reads as a ritual. Also fires when the
+# estimator has nothing to offer, which on arrival is most of the time.
 WELCOME = "Welcome back, {name}."
 
 WATER_PROMPT = ("I am ready. Please fill as much water as you like, "
                 "then tell me when you are done.")
 WATER_GIVEUP = "No answer. I will put the glass back."
 
-# A fourth answer from _ask, alongside a label and "": the user waved the talking
-# away mid-sentence. Not a label because no classifier produced it and no LLM was
-# asked — a hand is not a sentence. Only _execute acts on it; see there.
+# Fourth _ask outcome: waved off mid-sentence. Not a label — no classifier ran.
 PALM = "PALM"
 
-# Gestures that end an _ask, per ask. Open palm always does (it is the barge-in
-# itself); anything else is opt-in, because the same hand means different things
-# to different questions — a thumbs-up is "done" at the tap and "yes" to an offer.
+# Which hands end an _ask. Palm always; the rest opt-in, because a thumb means
+# "done" at the tap and "yes" to an offer.
 GESTURE_ANSWERS = {gestures.PALM: PALM}
 WATER_GESTURES = {gestures.PALM: "DONE", gestures.UP: "DONE"}
 
 
 def _check_gestures():
-    # Drift guard. Both failures are silent at runtime: a misspelt gesture simply
-    # never answers, and a label no caller accepts reads as "they said nothing".
+    # Drift guard — both failures are silent at runtime.
     for table in (GESTURE_ANSWERS, WATER_GESTURES):
         for name in table:
             assert name in (gestures.UP, gestures.DOWN, gestures.PALM), \
@@ -100,10 +81,8 @@ _check_gestures()
 
 
 def _match(answer, labels):
-    # However firmly the system prompt says "one word, no punctuation", an LLM
-    # will eventually reply "Coffee." — so fold case and trailing punctuation
-    # here rather than letting every == in the orchestration layer be a coin flip.
-    # "" for anything still unrecognised: callers must fall back, not guess.
+    # An LLM eventually replies "Coffee." — fold case and punctuation here, not
+    # at every == downstream. "" for anything unrecognised: callers fall back.
     clean = answer.strip().strip('.!?,;:"\'').lower()
     return next((l for l in labels if l.lower() == clean), "")
 
@@ -121,9 +100,8 @@ class SuggestionHandlerNode(Node):
         self._speech_sub = self.create_subscription(
             String, "/speech_text", self._on_speech, 10, callback_group=cb
         )
-        # The other way to answer. Same topic the arm watches for thumbs during
-        # its mime — the mouth lock below is what keeps the two from stealing
-        # each other's hands.
+        # Same topic the arm watches for thumbs during its mime; the mouth lock
+        # keeps the two from stealing each other's hands.
         self.create_subscription(
             String, gestures.TOPIC, self._on_gesture, 10, callback_group=cb
         )
@@ -133,15 +111,13 @@ class SuggestionHandlerNode(Node):
             AskLLM, "/ask_llm", callback_group=cb
         )
 
-        # Hardcoded user name for now. Not worth delving more into this topic
         self.declare_parameter("user_name", "David")
         self._user_name = (
             self.get_parameter("user_name").get_parameter_value().string_value
         )
 
-        # Greeting and offering are separate events now. arm_controller listens to
-        # the same topic and turns to the entrance; neither waits for the other,
-        # because speaking while the arm turns is fine in either order.
+        # Greeting and offering are separate events. arm_controller listens to the
+        # same topic and turns to the entrance; neither waits for the other.
         self.create_subscription(
             Empty, "/user_arrived", self._on_arrival, 10, callback_group=cb
         )
@@ -155,8 +131,8 @@ class SuggestionHandlerNode(Node):
             goal_callback=self._on_goal, callback_group=cb
         )
 
-        # The arm calls this from under the tap, while _execute below is parked
-        # in its BringDrink wait — hence ReentrantCallbackGroup on both.
+        # The arm calls this from under the tap while _execute is parked in its
+        # BringDrink wait — hence ReentrantCallbackGroup on both.
         self.create_service(
             AskForWater, "/ask_for_water", self._on_ask_for_water, callback_group=cb
         )
@@ -171,8 +147,8 @@ class SuggestionHandlerNode(Node):
         self.get_logger().info("Interaction manager ready")
 
     def _on_goal(self, goal_request):
-        # One conversation at a time. Rejecting beats letting a second goal fall
-        # through _ask and report "user declined" when we never actually asked.
+        # One conversation at a time. Rejecting beats reporting "user declined"
+        # for a question we never asked.
         if self._busy:
             self.get_logger().warn("[suggest_drink] busy — rejecting goal")
             return GoalResponse.REJECT
@@ -180,8 +156,7 @@ class SuggestionHandlerNode(Node):
         return GoalResponse.ACCEPT
 
     def _on_speech(self, msg):
-        # The lock IS the "we are listening" flag — no separate state field to
-        # keep in sync, and nothing for a nested ask to clobber on its way out.
+        # The lock IS the "we are listening" flag — no separate state to sync.
         if self._mouth.locked():
             self.get_logger().info(f"[SPEECH] Received: '{msg.data}'")
             self._speech_text = msg.data
@@ -190,9 +165,7 @@ class SuggestionHandlerNode(Node):
             self.get_logger().debug(f"[SPEECH] Ignored (not asking): '{msg.data}'")
 
     def _on_gesture(self, msg):
-        # Same gate as _on_speech, for the same reason: the lock IS "we are
-        # listening". Without it a thumbs-up meant for the arm's mime — which runs
-        # while this node is parked in its BringDrink wait — would land here.
+        # Same gate: without it a thumbs-up meant for the arm's mime lands here.
         answer = self._gestures.get(msg.data) if self._mouth.locked() else None
         if not answer:
             return
@@ -204,8 +177,7 @@ class SuggestionHandlerNode(Node):
     # ---- the dialog leaf: the ONE place the robot talks and listens ----
 
     def _llm(self, prompt, system):
-        # Blocking, but never from a callback thread that holds anything but the
-        # mouth. "" on every failure — unavailable, slow, or nothing to say.
+        # Blocking; "" on every failure — unavailable, slow, or nothing to say.
         if not self._llm_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().error("[LLM] /ask_llm unavailable — is llm up?")
             return ""
@@ -224,25 +196,22 @@ class SuggestionHandlerNode(Node):
         return future.result().response
 
     def _ask(self, text, timeout, system, labels, gesture_answers=GESTURE_ANSWERS):
-        # Returns one of `labels`; "" = nobody answered, or the LLM went
-        # off-menu. Three-valued because a silent user and a refusing user are
-        # different outcomes to every caller — and both of those callers already
-        # treat "" as their safe fallback, so an unusable answer joins them.
-        # A hand can also answer, and then the value is whatever
-        # `gesture_answers` maps it to — a label, or PALM.
+        # Returns one of `labels`, or whatever `gesture_answers` maps a hand to.
+        # "" = nobody answered or the LLM went off-menu; both are the caller's
+        # fallback, and a silent user is a different outcome from a refusing one.
         if not self._mouth.acquire(blocking=False):
             self.get_logger().warn(f"[ASK] already talking — dropped: '{text}'")
             return ""
         try:
             self._speech_event.clear()
             self._speech_text = None
-            # Set with the lock held and before the mouth opens, so a hand raised
-            # during the previous ask cannot answer this one.
+            # Set under the lock, so a hand raised during the previous ask
+            # cannot answer this one.
             self._gesture_answer = None
             self._gestures = gesture_answers
 
-            # "" = listen without speaking. A re-listen after a WAIT would
-            # otherwise read the same sentence at someone who is already pouring.
+            # "" = listen without speaking, so a re-listen does not read the
+            # same sentence at someone who is already pouring.
             self.get_logger().info(f"[ASK] TTS: '{text}' (up to {timeout}s)")
             if text:
                 self._tts_pub.publish(String(data=text))
@@ -252,15 +221,12 @@ class SuggestionHandlerNode(Node):
                 return ""
 
             if self._gesture_answer:
-                # A hand, not a sentence: nothing for the classifier to read, and
-                # the gesture already means exactly one thing to this question.
+                # A hand, not a sentence: nothing for the classifier to read.
                 return self._gesture_answer
 
             self.get_logger().info(f"[ASK] classifying: '{self._speech_text}'")
             # The question is half the meaning — "no, a coffee instead" only
-            # parses if the classifier knows what was on offer. This is why the
-            # llm node stays stateless: the context is right here, in the leaf
-            # that owns both halves, so nothing has to remember a conversation.
+            # parses with the offer in context. Which is why llm stays stateless.
             answer = self._llm(
                 f'The robot asked: "{text}"\n'
                 f'The person said: "{self._speech_text}"',
@@ -277,15 +243,9 @@ class SuggestionHandlerNode(Node):
     # ---- orchestration ----
 
     def _greet(self, drink, reason):
-        # "" on any failure, and the caller falls back to the canned question —
-        # a robot that goes silent because the lab PC is down is worse than a
-        # robot that sounds a bit robotic.
-        #
-        # No state, no call. A hand-typed drink has nothing behind it, and asked
-        # to greet without one the model does not omit the clause — it makes a
-        # state up ("I've noticed that you are tired"). Measured, not feared.
-        # Falling through to the caller's canned question is both cheaper and
-        # the only honest sentence available.
+        # "" on failure and the caller falls back to the canned question.
+        # No reason, no call: asked to greet without a state the model invents
+        # one ("I've noticed that you are tired") — a fabricated sensor reading.
         if not reason:
             return ""
         line = self._llm(
@@ -302,11 +262,8 @@ class SuggestionHandlerNode(Node):
         return line
 
     def _on_arrival(self, _msg):
-        # Straight to the mouth, not through _ask: nothing is being asked, so
-        # there is no answer to wait for and no reason to take the lock. If an
-        # ask is already running, skipping is right — trigger will follow this
-        # event with an offer anyway, and two openings talking over each other
-        # is worse than none.
+        # Straight to the mouth: nothing is being asked, so there is no answer to
+        # wait for. Mid-conversation we skip — trigger follows with an offer.
         if self._mouth.locked():
             self.get_logger().info("[ARRIVAL] mid-conversation — no welcome")
             return
@@ -314,15 +271,10 @@ class SuggestionHandlerNode(Node):
         self._tts_pub.publish(String(data=WELCOME.format(name=self._user_name)))
 
     def _on_ask_for_water(self, request, response):
-        # WAIT means wait. _ask ends at the FIRST thing it hears, and at a running
-        # tap that is rarely the answer — one word of background chatter used to
-        # end the whole prompt and put a half-filled glass back. So a WAIT costs a
-        # round and nothing else; only the caller's timeout ends this.
-        # "" still gives up: that is the mouth being busy or the classifier being
-        # down, and re-asking into either would spin, not listen.
-        # A raised hand means "done" here, palm or thumb alike — someone mid-pour
-        # is holding a glass under a tap and is not going to free a hand to wave
-        # at the robot, so any hand at all is them finishing, not interrupting.
+        # WAIT costs a round, not the goal: _ask ends at the first thing it hears,
+        # and at a running tap that is usually background chatter. "" still gives
+        # up — mouth busy or classifier down, re-asking would spin.
+        # Any hand means DONE: someone mid-pour won't free one to interrupt.
         deadline = time.monotonic() + request.timeout
         prompt = WATER_PROMPT
         response.confirmed = False
@@ -354,16 +306,11 @@ class SuggestionHandlerNode(Node):
                 return SuggestDrink.Result(accepted=False)
 
             if answer == PALM:
-                # Waved off. They did not decline the drink, they declined being
-                # talked to — so the arm mimes the menu instead of us saying more.
+                # They declined being talked to, not the drink — so the arm mimes.
                 self.get_logger().info("[GOAL] open palm — arm will mime the menu")
             elif answer in DRINKS:
-                # Naming a drink is an acceptance. Usually it is the one we just
-                # offered — the classifier answers "water" as readily as "YES",
-                # and reading that as a refusal is how this branch used to lose
-                # every accepted offer. Naming a different one is a counter-offer:
-                # they already told us what they want, so asking "would you like a
-                # coffee?" back at them would just be rude.
+                # Naming a drink is an acceptance (the classifier answers "water"
+                # as readily as "YES"); a different one is a counter-offer.
                 if answer != drink:
                     self.get_logger().info(f"[GOAL] switched '{drink}' -> '{answer}'")
                     drink = answer
@@ -387,8 +334,8 @@ class SuggestionHandlerNode(Node):
 
                 handle = bring_future.result()
                 if not handle.accepted:
-                    # Arm busy, or the drink is off-menu there. get_result_async
-                    # on a rejected handle raises, so this branch is required.
+                    # get_result_async on a rejected handle raises, so this branch
+                    # is required. Arm busy, or the drink is off-menu there.
                     self.get_logger().warn(f"[BRINGING] arm rejected '{drink}'")
                     goal_handle.succeed()
                     return SuggestDrink.Result(accepted=False)
@@ -408,8 +355,8 @@ class SuggestionHandlerNode(Node):
 
 
 def demo(host="http://10.163.18.109:11434", model="llama3.2"):
-    # The prompts above are the fragile part of this feature, not the plumbing.
-    # Needs a reachable Ollama, no ROS graph:  interaction_manager.py --selfcheck
+    # The prompts are the fragile part, not the plumbing. Needs a reachable
+    # Ollama, no ROS graph:  interaction_manager.py --selfcheck
     from brewbot.llm import generate
 
     assert _match(" Coffee. ", ("YES", "NO") + DRINKS) == "coffee"
@@ -438,11 +385,9 @@ def demo(host="http://10.163.18.109:11434", model="llama3.2"):
     assert ask(w, "so then I told him the build was broken anyway",
                WATER_SYSTEM, water_labels) == "WAIT"
 
-    # The greeting has no label to match, so the check is on its shape. Non-zero
-    # temperature means the wording moves between runs; only the invariants are
-    # asserted. Dana/tea share nothing with the exemplar in llm.SYSTEM_PROMPT
-    # (Sam/thirsty/juice), so a copied word is a fabricated fact, which is the
-    # failure that actually reaches the user.
+    # Wording moves between runs (temp 0.6), so only invariants are asserted.
+    # Dana/tea share nothing with the exemplar in llm.SYSTEM_PROMPT
+    # (Sam/thirsty/juice), so a copied word is a fabricated fact.
     for reason, drink in (("hot", "water"), ("stressed", "tea")):
         line = generate(host, model, "\n".join((
             "name: Dana",
@@ -462,8 +407,7 @@ def demo(host="http://10.163.18.109:11434", model="llama3.2"):
 
 def main():
     if "--selfcheck" in sys.argv:
-        # Trailing args are host, then model — the default points at the lab PC,
-        # and a laptop with its own Ollama should not have to edit the file.
+        # Trailing args are host, then model.
         demo(*sys.argv[sys.argv.index("--selfcheck") + 1:])
         return
     rclpy.init()

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # Empatica E4 → the scalar topics state_estimator expects.
-# The E4 has no HR characteristic, it streams a 64 Hz BVP waveform, so the
-# pulse extraction lives here: py_e4lib stays a pure BLE driver, and
-# /heartrate stays the swappable seam any other HR sensor can feed.
-#
-# Tuned against a 30 s reference capture (py-e4lib/examples/record.py). Re-record
-# and re-check the numbers in HeartRate's docstring before changing constants.
+# The E4 has no HR characteristic, only a 64 Hz BVP waveform, so the pulse
+# extraction lives here: py_e4lib stays a pure BLE driver and /heartrate stays
+# the seam any other HR sensor can feed.
+# Constants are tuned against a 30 s reference capture (py-e4lib/examples/record.py).
 
 import asyncio
 import math
@@ -20,9 +18,8 @@ from rclpy.node import Node
 from std_msgs.msg import Empty, Int32, Float32
 
 # py-e4lib ships with the repo but sits outside the workspace, and `ros2 run`
-# executes under /usr/bin/python3, which never sees the venv — so pip installing
-# it doesn't help. Search upward for the directory instead of counting "..":
-# colcon copies this file into build/ and install/ at different depths.
+# executes under /usr/bin/python3, which never sees the venv. Search upward
+# rather than counting "..": colcon copies this file in at different depths.
 for _root in Path(__file__).resolve().parents:
     if (_root / "py-e4lib").is_dir():
         sys.path.insert(0, str(_root / "py-e4lib"))
@@ -32,47 +29,39 @@ else:
 
 from py_e4lib import E4Client  # noqa: E402  (needs the sys.path line above)
 
-SAMPLE_RATE = 64.0    # Hz, E4 BVP nominal. Measured 64.4 Hz over a 26 s capture.
-                      # If HR reads consistently a few % off, tune here — the
-                      # rest of the math is scale-free.
-WINDOW_S = 8.0        # s of BVP per HR estimate. Shorter reacts faster and is
-                      # noisier; 6 and 10 both work, 8 was the best compromise
-                      # on the reference recording.
-WARMUP_S = 5.0        # s of BVP to throw away. py_e4lib's FIR buffers and Kalman
-                      # start at zero and the output pins at -630 for ~3 s; that
-                      # transient has more energy than the pulse and swamps it.
+SAMPLE_RATE = 64.0    # Hz, E4 BVP nominal. Measured 64.4 Hz over a 26 s capture;
+                      # tune here if HR reads a few % off, the rest is scale-free.
+WINDOW_S = 8.0        # s of BVP per HR estimate. 6 and 10 both work, 8 was the
+                      # best compromise on the reference recording.
+WARMUP_S = 5.0        # s of BVP to throw away: py_e4lib's FIR and Kalman start at
+                      # zero and the output pins at -630 for ~3 s.
 BASELINE_S = 2.0      # s rolling-mean window used to re-centre the signal
-MIN_BPM, MAX_BPM = 40.0, 120.0   # search range. Seated user, not an athlete
-                                 # mid-set — widen if that stops being true.
-OCTAVE_TOL = 0.8      # a lag of 2T correlates nearly as well as T, and taking
-                      # the global max lands on it and halves the rate. Accept
-                      # the FIRST peak within this fraction of the best instead.
+MIN_BPM, MAX_BPM = 40.0, 120.0   # search range. Seated user, not an athlete.
+OCTAVE_TOL = 0.8      # a lag of 2T correlates nearly as well as T, so the global
+                      # max halves the rate. Take the FIRST peak within this
+                      # fraction of the best instead.
 MIN_QUALITY = 0.05    # normalised peak below this is noise, not a pulse
 PUBLISH_HZ = 1.0      # BLE streams at 4–64 Hz; decide() must not run that fast
-RECONNECT_DELAY = 1.0 # s between scan attempts. The E4's 0x08 supervision-timeout
-                      # drops are routine, and find() already blocks ~10 s scanning,
-                      # so this only sets how briefly the radio idles in between.
-ARRIVAL_GAP = 120.0   # s offline before a reconnect counts as a person ARRIVING
-                      # rather than the link bouncing. Longer than the worst
-                      # observed 0x08 drop+rescan, shorter than a coffee break.
+RECONNECT_DELAY = 1.0 # s between scan attempts. find() already blocks ~10 s, so
+                      # this only sets how briefly the radio idles in between.
+ARRIVAL_GAP = 120.0   # s offline before a reconnect counts as an ARRIVAL rather
+                      # than the link bouncing. Longer than the worst observed
+                      # 0x08 drop+rescan, shorter than a coffee break.
 
 
 class HeartRate:
     """BVP waveform → BPM, by autocorrelation over a sliding window.
 
-    Beat-by-beat detection was tried first and does not survive this signal.
-    py_e4lib's FIR chain is a low-pass (all coefficients positive, summing to 1),
-    so it removes HF noise but leaves the E4's wrist PPG with several zero
-    crossings per beat at an amplitude of only ~10 units. Replaying a 26 s
-    recording through it gave intervals of 0.96, 0.64, 1.22, 0.90, 0.88, 1.00,
-    0.61, 0.51 s against a true 1.03 s: single beats split in two, pairs merged
-    into one, HR swinging 43–134 against a true 56–60. No refractory value fixes
-    that — the spurious crossing lands at ~0.5 s, and a window wide enough to
-    reject it also rejects real beats above 120 BPM.
+    Beat-by-beat detection does not survive this signal. py_e4lib's FIR chain is
+    a low-pass, so the wrist PPG keeps several zero crossings per beat at ~10
+    units amplitude: replaying a 26 s recording gave intervals of 0.96, 0.64,
+    1.22, 0.90, 0.88, 1.00, 0.61, 0.51 s against a true 1.03 s, and HR swinging
+    43–134 against a true 56–60. No refractory value fixes that — the spurious
+    crossing lands at ~0.5 s.
 
-    Autocorrelation asks a different question — what period does this window
-    repeat at — and is indifferent to waveform shape, baseline drift and the
-    dicrotic notch. On the same recording it holds 55–64 BPM. Stdlib only.
+    Autocorrelation asks what period the window repeats at, so it is indifferent
+    to waveform shape, drift and the dicrotic notch. Same recording: 55–64 BPM.
+    Stdlib only.
     """
 
     def __init__(self):
@@ -88,8 +77,7 @@ class HeartRate:
             self._mean_buf.append(v)
             if self._n < SAMPLE_RATE * WARMUP_S:
                 continue
-            # Rolling mean high-passes the signal. Autocorrelation measures how
-            # a window correlates with itself, so any DC offset or slow drift
+            # Rolling mean high-passes the signal: any DC offset or slow drift
             # correlates with everything and buries the pulse.
             self._buf.append(v - sum(self._mean_buf) / len(self._mean_buf))
 
@@ -99,8 +87,8 @@ class HeartRate:
             return None
 
         # The rolling mean leaves a constant residual on a sloping baseline, and
-        # a constant correlates equally at every lag — which drags the peak down
-        # to the shortest one and reports MAX_BPM. Re-zero the window itself.
+        # a constant correlates equally at every lag — which drags the peak to
+        # the shortest one and reports MAX_BPM. Re-zero the window itself.
         d = list(self._buf)
         m = sum(d) / len(d)
         d = [x - m for x in d]
@@ -109,9 +97,9 @@ class HeartRate:
         if c0 <= 0.0:
             return None
 
-        # ponytail: O(window x lags) ~ 30k float ops per second in pure Python.
-        # Measured well under the 1 s budget. If it ever matters, decimate to
-        # 32 Hz first — the pulse is under 2 Hz, so nothing is lost.
+        # O(window x lags) ~ 30k float ops per second in pure Python, measured
+        # well under the 1 s budget. Decimate to 32 Hz if it ever matters — the
+        # pulse is under 2 Hz, so nothing is lost.
         corr = [sum(d[i] * d[i + lag] for i in range(len(d) - lag)) / (len(d) - lag) / c0
                 for lag in range(self._min_lag, self._max_lag)]
 
@@ -127,7 +115,7 @@ class HeartRate:
 
         lag = self._min_lag + k
         # Parabolic interpolation: whole-sample lags quantise HR to ~1 BPM steps
-        # around 60, which shows up as a visible stair-step on the topic.
+        # around 60, which shows up as a stair-step on the topic.
         if 0 < k < len(corr) - 1:
             a, b, c = corr[k - 1], corr[k], corr[k + 1]
             denom = a - 2 * b + c
@@ -144,36 +132,30 @@ class E4SensorNode(Node):
 
         self._address = self.declare_parameter("address", "").value
 
-        # The BVP-derived HR below is the weakest number this node produces.
-        # Set false to let a dedicated HR sensor own /heartrate (see
-        # sensors.launch.py) — this also skips the 64 Hz BVP subscription
-        # entirely, not just the publish.
+        # The BVP-derived HR is the weakest number this node produces. False lets
+        # a dedicated HR sensor own /heartrate (see sensors.launch.py) and skips
+        # the 64 Hz BVP subscription entirely, not just the publish.
         self._publish_hr = self.declare_parameter("publish_hr", True).value
 
-        # ponytail: no /hrv publisher. RMSSD is defined on beat-to-beat
-        # differences, and this signal can't give trustworthy individual beats
-        # (see HeartRate) — RMSSD amplifies exactly that error, which is why it
-        # read ~450 ms against a real 20–100. state_estimator latches the first
-        # /hrv forever as its baseline, so a wrong number is worse than none.
-        # Restore this if the BVP decode is ever fixed, not before.
+        # No /hrv publisher: RMSSD is defined on beat-to-beat differences, which
+        # this signal cannot give (see HeartRate), and it amplifies exactly that
+        # error — it read ~450 ms against a real 20–100. state_estimator latches
+        # the first /hrv forever, so a wrong number is worse than none.
         self._hr_pub = (self.create_publisher(Int32, "/heartrate", 10)
                         if self._publish_hr else None)
         self._eda_pub = self.create_publisher(Float32, "/eda", 10)
         self._temp_pub = self.create_publisher(Float32, "/skin_temp", 10)
         self._motion_pub = self.create_publisher(Float32, "/motion", 10)
 
-        # Wearing the band IS the arrival signal — no separate presence sensor.
-        # An event, not a stream: subscribers act once (trigger opens a
-        # conversation; the arm could look at the entrance) and a level topic
-        # would make each of them own the same edge detection.
+        # Wearing the band IS the arrival signal. An event, not a stream, so
+        # subscribers act once instead of each owning the same edge detection.
         self._arrival_pub = self.create_publisher(Empty, "/user_arrived", 10)
         self._last_seen = float("-inf")   # never seen. Not 0.0: monotonic() is
                                           # uptime, so a launch within ARRIVAL_GAP
                                           # of boot would mute the first connect
 
-        # ponytail: BLE thread writes these, timer thread reads them. Plain
-        # attribute assignment and deque.append are GIL-atomic; add a lock only
-        # if this ever grows into a read-modify-write.
+        # BLE thread writes these, timer thread reads them. Plain assignment and
+        # deque.append are GIL-atomic; add a lock only for a read-modify-write.
         self._beats = HeartRate()
         self._eda = None
         self._temp = None
@@ -247,9 +229,9 @@ def demo():
     n = int(SAMPLE_RATE * 60)
 
     def ppg(bpm, drift=0.0):
-        """A pulse shape, not a sine: a second harmonic puts a dicrotic notch in
-        each beat, which is the feature that broke zero-crossing detection.
-        Optional drift is the wandering baseline the low-pass leaves behind."""
+        """A pulse shape, not a sine: the second harmonic puts a dicrotic notch
+        in each beat, which is what broke zero-crossing detection. Optional drift
+        is the wandering baseline the low-pass leaves behind."""
         f = bpm / 60.0
         return [math.sin(2 * math.pi * f * (i / SAMPLE_RATE))
                 + 0.6 * math.sin(4 * math.pi * f * (i / SAMPLE_RATE) + 1.0)

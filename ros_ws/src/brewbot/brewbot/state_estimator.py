@@ -10,56 +10,43 @@ from brewbot_interfaces.srv import GetUserState
 from brewbot.drinks import MENU
 
 # Tune on real sensors. Temp/HR are absolute; EDA is baseline-relative because
-# absolute skin conductance varies ~100x between people (E4 range 0.01–10 uS),
-# so a fixed uS threshold classifies the wearer, not their state.
+# absolute skin conductance varies ~100x between people (E4 range 0.01–10 uS).
 HR_THRESHOLD = 10       # BPM above base_hr → aroused
 SKIN_TEMP_HOT = 35.0    # °C skin temp → hot   (resting skin ~33, so ±2)
 SKIN_TEMP_COLD = 31.0   # °C skin temp → cold
 
-# /motion is INSTANTANEOUS |accel| (g, gravity removed) — one wrist flick
-# spikes it. decide() wants "is this person active", so the node keeps a slow
-# mean and this threshold applies to THAT, which is a much smaller number than
-# a raw peak. Guessed: seated ~0.01-0.05, walking ~0.1-0.3. Read the [QUERY]
-# log in the lab and set it for real.
+# Applies to the SMOOTHED motion, not raw peaks — /motion is instantaneous
+# |accel| and one wrist flick spikes it. Guess: seated ~0.01-0.05, walking
+# ~0.1-0.3; read the [QUERY] log in the lab and set it for real.
 MOTION_ACTIVE = 0.15
 MOTION_ALPHA = 0.02     # EMA on 1 Hz samples → ~50 s of history
 
-# ponytail: EMA baseline, not session-start. Dry E4 electrodes need minutes to
-# equilibrate, so the first reading is electrode settling, not the person.
-# Ceiling: an EMA is a high-pass — it sees CHANGES, and a slow all-session
-# drift gets absorbed into the baseline and never fires. Fine here; a real
-# calibration step is the upgrade.
+# EMA baseline, not session-start: dry E4 electrodes need minutes to
+# equilibrate. Ceiling: an EMA is a high-pass, so a slow all-session drift gets
+# absorbed and never fires. A real calibration step is the upgrade.
 EDA_ALPHA = 0.005       # ~200 s of history at 1 Hz
 EDA_RISE_FRAC = 1.15    # 15% over own baseline → sympathetic arousal
 EDA_DROP_FRAC = 0.85    # 15% under → sympathetic tone sagging
 
 SPIKE_PERIOD = 1.0      # s between unsolicited re-checks
-SPIKE_STREAK = 3        # consecutive agreeing samples before we believe it.
-                        # HR comes from BVP autocorrelation — one noisy sample
-                        # crossing the threshold must not start a conversation.
+SPIKE_STREAK = 3        # agreeing samples before we believe it. HR comes from
+                        # BVP autocorrelation — one noisy sample crossing the
+                        # threshold must not start a conversation.
 SPIKE_COOLDOWN = 300.0  # s — at most one unsolicited offer per 5 min
 
 
-# ponytail: level-crossing IS the spike. decide() already encodes "elevated",
-# so this only watches its output go falsy → truthy. Real spike math (rolling
-# window, z-score) would add a second untuned threshold set fighting the first;
-# add it only if crossing proves too blunt on real sensors.
-# streak counts samples INCLUDING this one, so == fires exactly once per
-# episode: no re-fire while the user simply stays stressed.
+# Level-crossing IS the spike: decide() already encodes "elevated", so this only
+# watches its output go falsy → truthy. streak counts this sample, so == fires
+# exactly once per episode — no re-fire while the user simply stays stressed.
 def spike_due(streak, since_last):
     return streak == SPIKE_STREAK and since_last > SPIKE_COOLDOWN
 
 
 # Pure decision tree — no ROS, so the demo() below actually tests it.
-# Every drink it names must be a MENU key; demo() asserts that, because a
-# suggestion nothing downstream can make is worse than no suggestion.
-# Order matters: resolve thermal + motion BEFORE the arousal axis, else "hot",
-# "active" and "stressed" all fight over the same HR/EDA rise. None = signal
-# not available yet (sensor not wired) → that branch is skipped.
-#
-# No HRV: RMSSD needs clean beat-to-beat intervals, and the E4's wrist PPG does
-# not survive a user walking around a lab (see sensor_e4). There is no /hrv
-# publisher, so that branch only ever fired against sensor_fakes.
+# Order matters: thermal + motion BEFORE arousal, else "hot", "active" and
+# "stressed" all fight over the same HR/EDA rise. None = signal not wired yet.
+# No HRV: the E4's wrist PPG can't give trustworthy beat intervals (sensor_e4),
+# and there is no /hrv publisher — that branch only ever fired against fakes.
 def decide(hr, eda, temp, motion, base_hr, eda_base):
     # 1. thermal axis — the only signals that actually sense temperature
     if temp is not None:
@@ -72,30 +59,25 @@ def decide(hr, eda, temp, motion, base_hr, eda_base):
     if motion is not None and motion >= MOTION_ACTIVE:
         return "active", "water"
 
-    # 3. arousal axis. Either signal alone is enough: heat drives EDA and
-    #    movement drives HR, but both confounds are already excluded above, so
-    #    OR costs fewer misses here than it costs false positives.
-    #    `eda_base` truthiness covers None AND 0.0 — an unworn band reads ~0,
-    #    and every ratio against 0 is true.
+    # 3. arousal. Either signal alone is enough: heat drives EDA and movement
+    #    drives HR, but both confounds are excluded above. `eda_base` truthiness
+    #    covers None AND 0.0 — an unworn band reads ~0 and every ratio is true.
     if hr is not None and hr - base_hr >= HR_THRESHOLD:
         return "stressed", "tea"
     if eda is not None and eda_base and eda >= eda_base * EDA_RISE_FRAC:
         return "stressed", "tea"
 
-    # 4. low arousal — sympathetic tone sagging while calm, still and not warm.
-    #    Those three are implied by reaching this line, so no extra conditions.
+    # 4. low arousal — calm, still and not warm are implied by reaching here.
     if eda is not None and eda_base and eda <= eda_base * EDA_DROP_FRAC:
         return "fatigued", "coffee"
 
-    # 5. baseline → no proactive offer. "" not None: this is the service
-    #    response field, and both are falsy at the caller.
+    # 5. baseline → no proactive offer. "" not None: this is the response field.
     return "calm", ""
 
 
-# Passive observer: subscriptions cache, the service answers. It never
-# initiates anything — deciding WHEN to interrupt the user is a policy question
-# that belongs in whichever node saw the triggering event (arrival, gesture),
-# because that node is the one that knows if we're already mid-conversation.
+# Passive observer: subscriptions cache, the service answers. WHEN to interrupt
+# is policy and belongs in the node that saw the event — it knows whether we are
+# already mid-conversation.
 class StateDeciderNode(Node):
 
     def __init__(self):
@@ -120,8 +102,8 @@ class StateDeciderNode(Node):
 
         self.create_service(GetUserState, "/get_user_state", self._on_query)
 
-        # The one thing this node does unprompted. Still not policy: it reports
-        # "something changed", trigger decides whether to interrupt.
+        # The one thing this node does unprompted — and still not policy: it
+        # reports "something changed", trigger decides whether to interrupt.
         self._spike_pub = self.create_publisher(Empty, "/user_spike", 10)
         self._streak = 0
         self._last_spike = float("-inf")   # not 0.0: monotonic() is uptime, so
@@ -134,13 +116,12 @@ class StateDeciderNode(Node):
         )
 
     # --- signal caches ---
-    # Last value wins, forever. A dead sensor answers with a stale
-    # reading rather than None; the TTS drop warning is what surfaces that.
+    # Last value wins, forever: a dead sensor answers stale rather than None.
     # Timestamp each signal and age it out here if that stops being enough.
     def _on_eda(self, msg):
         self._eda = msg.data
-        # Tonic baseline: what "normal" is for THIS wearer. Seeded on the first
-        # sample so it does not spend minutes climbing away from zero.
+        # Tonic baseline for THIS wearer, seeded on the first sample so it does
+        # not spend minutes climbing away from zero.
         self._eda_base = msg.data if self._eda_base is None else (
             self._eda_base + EDA_ALPHA * (msg.data - self._eda_base)
         )
@@ -149,8 +130,7 @@ class StateDeciderNode(Node):
         self._temp = msg.data
 
     def _on_motion(self, msg):
-        # Smooth here, not in sensor_e4: the sensor should publish what it
-        # measures, and "active" is a decision-layer notion.
+        # Smooth here, not in sensor_e4: "active" is a decision-layer notion.
         self._motion = msg.data if self._motion is None else (
             self._motion + MOTION_ALPHA * (msg.data - self._motion)
         )
@@ -165,7 +145,7 @@ class StateDeciderNode(Node):
         )
 
     # Thresholds above are guesses until someone reads real numbers off a real
-    # wrist. Riding along on the two lines that already log means no new spam.
+    # wrist. Rides along on the two lines that already log — no new spam.
     def _inputs(self):
         def f(v):
             return "-" if v is None else f"{v:.2f}"

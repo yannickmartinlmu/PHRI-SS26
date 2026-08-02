@@ -3,12 +3,8 @@
 
   ros2 service call /ask_llm brewbot_interfaces/srv/AskLLM "{prompt: 'hi'}"
 
-Leave `system` empty and you get the barista persona below. Fill it in and the
-same service is a classifier instead — that is how interaction_manager reads
-yes/no/counter-offer out of a sentence without a second model on this laptop.
-
-Talks to Ollama on the lab PC. Every failure — unreachable, timed out, empty
-generation — comes back as "" and is logged here; callers just fall back.
+Empty `system` = the barista persona below; filled in = a classifier instead.
+Talks to Ollama on the lab PC. Every failure comes back as "" and is logged here.
 """
 
 import rclpy
@@ -20,14 +16,9 @@ import urllib.request
 from brewbot_interfaces.srv import AskLLM
 
 
-# The example is the instruction. Told to "be brief" a 3B model writes 30 words
-# of ad copy — "our specialty blend, roasted locally" — because nothing forbids
-# inventing. Shown one sentence in the target shape it copies the shape and
-# stops. The name and state in the example (Sam/thirsty/juice) match no real
-# case on purpose, so a leak is obvious in the logs rather than plausible.
-# Callers must not send a state they did not measure: with the slot empty the
-# model fills it, and "I've noticed that you are tired" is a fabricated sensor
-# reading. See interaction_manager._greet, which declines to call at all.
+# The example is the instruction: told to "be brief" a 3B model writes 30 words
+# of ad copy, shown one sentence in the target shape it copies it and stops.
+# Sam/thirsty/juice match no real case, so a leak is obvious in the logs.
 SYSTEM_PROMPT = (
     "You are BrewBot, a robot barista in a university lab. "
     "Greet the person by name, say what you noticed about them, then offer "
@@ -38,34 +29,29 @@ SYSTEM_PROMPT = (
     "a name or a drink. No quotation marks, no lists, no markdown, no emoji."
 )
 
-# Temperature 0: the same utterance must classify the same way every time, or
-# debugging a bad interaction is guesswork.
-# keep_alive holds the model in the lab PC's memory, so only the very first
-# request after an ollama restart pays the load; num_predict is the hard length
-# cap that keeps TTS from reading an essay.
+# Temperature 0: the same utterance must classify the same way every time.
+# num_predict is the hard length cap that keeps TTS from reading an essay.
 OPTIONS = {"temperature": 0, "num_predict": 60}
 
-# The greeting is the one call that WANTS to vary: a spike can fire three times
-# in a session and the same sentence three times is what makes a robot sound
-# broken. Measured on llama3.2 — 0.6 rewords, 0.9 starts narrating in the third
-# person ("David appears fatigued and in need of refreshment").
-# ponytail: keyed off an empty `system`, which is already this service's "you
-# are the barista, not a classifier" switch. A real per-call options field means
-# changing AskLLM.srv, which is a brewbot_interfaces rebuild.
+# The greeting is the one call that WANTS to vary — the same sentence three
+# times is what makes a robot sound broken. Measured on llama3.2: 0.6 rewords,
+# 0.9 starts narrating in the third person.
+# Keyed off an empty `system` rather than a per-call options field, which would
+# mean changing AskLLM.srv and rebuilding brewbot_interfaces.
 GREET_OPTIONS = {"temperature": 0.6, "num_predict": 40}
-KEEP_ALIVE = "30m"
+KEEP_ALIVE = "30m"    # holds the model in the lab PC's memory between calls
 
 
 def generate(host, model, prompt, system, timeout):
-    # Module level, not a method: the prompt wording is the fragile part of this
-    # feature, and a self-check should be able to hit Ollama without a ROS graph.
+    # Module level, not a method: the prompt wording is the fragile part, and a
+    # self-check should be able to hit Ollama without a ROS graph.
     req = urllib.request.Request(
         f"{host}/api/generate",
         data=json.dumps({
             "model": model,
             "prompt": prompt,
-            # Empty means "you are the barista" — resolved HERE, not at the
-            # caller, because the options below read the same emptiness.
+            # Resolved HERE, not at the caller — the options below read the
+            # same emptiness.
             "system": system or SYSTEM_PROMPT,
             "stream": False,
             "keep_alive": KEEP_ALIVE,
@@ -73,11 +59,11 @@ def generate(host, model, prompt, system, timeout):
         }).encode(),
         headers={"Content-Type": "application/json"},
     )
-    # stream:False means Ollama sends one body at the end, so this read
-    # blocks for the whole generation — timeout has to cover all of it.
+    # stream:False means one body at the end, so this read blocks for the whole
+    # generation — timeout has to cover all of it.
     with urllib.request.urlopen(req, timeout=timeout) as r:
         # Small models wrap spoken lines in quotes however firmly the prompt
-        # says not to, and TTS reads them out. Stripping is not a suggestion.
+        # says not to, and TTS reads them out.
         return json.loads(r.read())["response"].strip().strip('"').strip()
 
 
@@ -88,8 +74,8 @@ class LLMNode(Node):
 
         self.declare_parameter("host", "http://10.163.18.109:11434")
         self.declare_parameter("model", "llama3.2")
-        # Generous because the FIRST call also pays for loading the model into
-        # memory. Warm calls are ~1-2s; drop this once the lab PC stays warm.
+        # Generous because the FIRST call also pays for loading the model.
+        # Warm calls are ~1-2s; drop this once the lab PC stays warm.
         self.declare_parameter("timeout", 30.0)
 
         self._host = self.get_parameter("host").get_parameter_value().string_value
@@ -98,8 +84,8 @@ class LLMNode(Node):
 
         self._srv = self.create_service(AskLLM, "ask_llm", self._handle)
 
-        # One throwaway generation to pull the model into memory now, so the
-        # first real interaction is not the one that waits 20s for the load.
+        # One throwaway generation, so the first real interaction is not the one
+        # that waits 20s for the model to load.
         self._warmup_timer = self.create_timer(0.1, self._warmup)
 
         self.get_logger().info(
@@ -112,8 +98,8 @@ class LLMNode(Node):
             self._generate("hi", "")
             self.get_logger().info("model warm")
         except Exception as e:
-            # Not fatal — the lab PC may come up after us. Calls just pay the
-            # load themselves, which is what the generous timeout is for.
+            # Not fatal — the lab PC may come up after us, and calls then pay
+            # the load themselves.
             self.get_logger().warn(f"warmup failed, model still cold: {e}")
 
     def _handle(self, request, response):
