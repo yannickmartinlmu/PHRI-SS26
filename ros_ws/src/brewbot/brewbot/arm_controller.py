@@ -45,7 +45,8 @@ from brewbot_interfaces.action import BringDrink, DispenseDrink
 from brewbot_interfaces.srv import AskForWater
 from brewbot.drinks import MENU
 from brewbot.gestures import (
-    EVENT_TOPIC as GESTURE_EVENT_TOPIC,
+    TOPIC as GESTURE_TOPIC,
+    NONE as GESTURE_NONE,
     UP as GESTURE_UP,
     PALM as GESTURE_PALM,
 )
@@ -70,10 +71,11 @@ ELMO_GET = "/elmo/id1/{axis}/position/get"
 
 
 # Every hand the robot can see — both recognizers feed this one topic. The names
-# and the reason it is the EVENT topic live in brewbot/gestures.py, because
+# and why it is the STATE topic live in brewbot/gestures.py, because
 # interaction_manager watches the same topic for the open-palm barge-in.
 # thumbs_down needs no special case here — see query_all_drinks.
 GESTURE_TIMEOUT = 10.0    # sec the arm holds the questioning pose waiting for an answer
+ASK_BEAT = 0.5            # sec between facing the user and the "well?" tilt — tune by eye
 
 # Sec the arm holds the glass under the tap waiting to be told "done". Bounded so a
 # dead transcriber parks the arm at the sink for two minutes, not forever. Long
@@ -426,7 +428,7 @@ class ArmController(Node):
         self._answered = threading.Event()
         self._gesture = ""
         self.create_subscription(
-            String, GESTURE_EVENT_TOPIC, self._on_gesture, 10, callback_group=cb)
+            String, GESTURE_TOPIC, self._on_gesture, 10, callback_group=cb)
 
         # ...but the eye has to be pointed the right way first. False until a
         # recognizer says otherwise, which degrades to "assume kitchen" — the
@@ -677,8 +679,12 @@ class ArmController(Node):
             raise RuntimeError(f"gripper stuck at {result.position}")
 
     def _on_gesture(self, msg):
-        # No filter: the recognizer publishes an event only for the three gestures
-        # above, and all three end the wait — sitting out the rest of the timeout
+        # "none" is most of this topic — it ticks at 10 Hz whether or not a hand
+        # is up — and it is not an answer. Without this guard every ask_user()
+        # returns instantly and query_all_drinks races through the whole menu.
+        if msg.data == GESTURE_NONE:
+            return
+        # The other three all end the wait: sitting out the rest of the timeout
         # after the user has already answered reads as a hang.
         self.get_logger().info(f"[gesture] {msg.data}")
         self._gesture = msg.data
@@ -934,8 +940,8 @@ class ArmController(Node):
         # gives a human coffee_skip_wait seconds to do it by hand.
         self.get_logger().warn(f"[coffee] not brewing {drink}: {why}")
         self._tts_pub.publish(String(
-            data=f"I am not starting the machine right now. "
-                 f"Please pour the {drink.replace('_', ' ')} yourself."))
+            data=f"Coffee machine is not available. I will wait for "
+                 f"{float(self.coffee_skip_wait):.0f} seconds instead of pouring {drink}"))
         time.sleep(float(self.coffee_skip_wait))
 
     def _request_coffee_machine(self, drink):
@@ -983,13 +989,15 @@ class ArmController(Node):
         at_kitchen = self._person["kitchen"] and not self._person["pc"]
         self.get_logger().info(
             f"[gesture] asking towards {'kitchen' if at_kitchen else 'pc'}")
-        for pose in ("look_at_user", "look_at_user_question"):
-            self.move_arm(pose + "_kitchen" if at_kitchen else pose)
-        # Cleared AFTER the swing, not before: _on_gesture is ungated and sets
-        # _answered for every event on the topic, whenever it arrives. Clearing
-        # first meant any hand seen during the mime or the turn — or during a
-        # gesture test minutes earlier, since the flag is never cleared elsewhere —
-        # was still latched when we got here, and the wait returned instantly.
+        suffix = "_kitchen" if at_kitchen else ""
+        self.move_arm("look_at_user" + suffix)
+        time.sleep(ASK_BEAT)   # settle, then tilt — one gesture, not two commands
+        self.move_arm("look_at_user_question" + suffix)
+        # Cleared AFTER the swing, not before: _on_gesture is ungated, so a hand
+        # seen during the mime would otherwise still be latched here and the wait
+        # would return instantly. Safe to clear late only because the topic is the
+        # state stream — a thumb still held is re-sent within 100 ms, and one put
+        # down before we arrived expires there rather than waiting here as an answer.
         self._answered.clear()
         self._gesture = ""
         self._answered.wait(float(timeout))   # return redundant: "" already says it
@@ -1079,17 +1087,18 @@ class ArmController(Node):
     def shot_3(self):
         # 2001 beat: the offer in the house voice, the refusal in HAL's. The
         # "hal:" prefix is what tts.py switches models on. Lights go red by hand.
-        #self.move_arm("look_at_user_question")
+        self.open_gripper()
+        self.move_arm("look_at_user_question")
         self._tts_pub.publish(String(data="Hello David, would you like a cup of water?"))
         self._heard.clear()
         # Any utterance is the cue. The timeout fires the refusal anyway — a dead
         # mic must not wedge the shot mid-take.
         self._heard.wait(timeout=15.0)
-        time.sleep(2.0)   # let David finish his tail before HAL steps on it
-        #self.move_arm("look_at_user")
+        #time.sleep(2.0)   # let David finish his tail before HAL steps on it
+        self.move_arm("look_at_user")
         self._tts_pub.publish(String(
             data="hal: I'm sorry Dave. I'm afraid I can't do that."))
-        #self.close_gripper()
+        self.close_gripper()
 
 
     # ---- orchestration: BringDrink = skills in sequence ----

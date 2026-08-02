@@ -125,7 +125,7 @@ class SuggestionHandlerNode(Node):
         # its mime — the mouth lock below is what keeps the two from stealing
         # each other's hands.
         self.create_subscription(
-            String, gestures.EVENT_TOPIC, self._on_gesture, 10, callback_group=cb
+            String, gestures.TOPIC, self._on_gesture, 10, callback_group=cb
         )
 
         # One client, two jobs: classifying replies and writing the greeting.
