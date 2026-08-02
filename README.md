@@ -1,6 +1,8 @@
 # PHRI
 
-workspaces for PHRI
+BrewBot: a Kinova Gen3 on the Elmo rail that notices you need a drink and brings you one.
+An Empatica E4 reads your state, the estimator turns that into a suggestion, and the
+robot asks before it fetches.
 
 ## Developing, venvs and bulding
 Newer Linux/Python installations don't like installing python packages system wide. 
@@ -20,7 +22,7 @@ alias sourceall='cd [PATH_TO_WS] && sourceros && sourcelocal && sourcevenv && ex
 alias buildros='colcon build --symlink-install' 
 ```
 
-Instead of `colcon build`, i recommend using `colcon build --symlink-install`, which installs symlinks to the actual python files, so we dont need to recompile, whenever we change python files. Only when we need add files. Great for development!
+Instead of `colcon build`, i recommend using `colcon build --symlink-install`, which installs symlinks to the actual python files, so we dont need to recompile whenever we change python files. Only when we need add files. Great for development!
 
 ### Installation requirements
 Finally, install all the following requirements:
@@ -34,6 +36,11 @@ Inside a venv:
 ```
 pip install "setuptools==68.1.2" "empy==3.3.4" lark catkin_pkg flask vosk bleak piper-tts sounddevice soundfile faster-whisper sentence-transformers
 ```
+
+**==TODO==**\
+The camera nodes need more than this (cv2, mediapipe, plus the ROS-side
+apriltag/kinect/kinova_vision packages) and there is a numpy conflict: the venv wants 2.x,
+Jazzy's `cv_bridge` needs 1.x and segfaults on the mismatch instead of raising. David, you know more about this than I do.
 
 To download models:
 ```
@@ -60,9 +67,20 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/me
 wget https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json
 ```
 
+Gestures (only if you run the camera nodes):
+```
+python3 scripts/download_gesture_model.py
+```
+
 A few notes: 
 - setuptool needs to be downgraded, as newer version don't support Colcons --editable anymore. 
-- sentence transformers is by far the largest pip module. Don't install if you are not going to run it.
+- sentence transformers is by far the largest pip module. Don't install if you are not going to run it. Especially since we switched to an LLM-based classification. 
+
+### Ollama
+The `llm` node talks to an Ollama server. In the lab that server
+is the lab PC, which is why the host defaults to `http://10.163.18.109:11434`.
+Without a reachable server the node still starts, logs `warmup failed`, and every reply
+comes back empty — the robot goes quiet instead of crashing. Might need adjusting when the IP changes. 
 
 ### Simulating the arm
 We can simulate the drivers with kinovas official packages. However there are problems with simulating the gripper and there is some version mismatch. So we need to patch them. 
@@ -101,15 +119,12 @@ So add this to your ~/.bashrc:
 export GALLIUM_DRIVER=d3d12
 ```
 
-### Empatica E4 Sensor
-This section is only important if you intent to collect data from this sensor to stream on ros. 
+### Sensors
+To collect data from the sensor, run the sensor_e4 node and press and hold the one button on the Empatica E4 until the LED starts blinking. Then upon connecting, it should turn blue and then the LED should turn off after a short while. 
 
-First, install the lib with 
-```
-pip install -e py-e4lib
-```
-while in the root of the repo and inside the venv. 
-This provides an API to use in the nodes. 
+The E4 is EOL, and only diretly measured BVP. 
+In theory one could extract heartrate out of it, but I couldn't. 
+So the sensor_hr listens to a specific HR sensor. Change the adress, if you want to run with it. 
 
 #### Troubleshooting
 I had issues where the connection drops (0x08 error code).
