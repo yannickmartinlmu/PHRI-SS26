@@ -945,6 +945,7 @@ class ArmController(Node):
         for _ in range(2):
             self.move_arm(pose + "1")
             self.move_arm(pose + "2")
+        self.move_arm(pose + "1")
         self.open_gripper() # For unobstructed viewing of user
 
     def ask_user(self, timeout=GESTURE_TIMEOUT):
