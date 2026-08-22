@@ -1,318 +1,241 @@
 % Use this file to enter your text.
 
-\section{Introduction}
+\section{Introduction and Related Work}
 
-A person working in a shared lab kitchen is continuously in some physical state
---- warm, tense, tired, restless --- and almost never says so out loud. These
-states are \emph{latent}: they are real, they change behaviour, and they are
-legible to instruments long before they are legible to a conversation partner.
-Consumer-grade wearables now stream heart rate, electrodermal activity and skin
-temperature continuously, which makes it technically straightforward for a robot
-to notice that someone is overheating and to act on that observation without
-being asked. The appeal is obvious in a service setting: instead of waiting for
-a command, the robot offers what the person is about to want.
+A service robot is typically reactive: the human makes a request and the robot
+responds. Physiological and contextual sensing enables a different form of
+interaction. Rather than waiting until a person explicitly asks for assistance,
+a robot can use cues about the person's current physical or affective state to
+decide that assistance might be appropriate and proactively offer it. This idea
+is particularly relevant to human--robot interaction (HRI), where assistance may
+involve physical action in a shared environment rather than only information or 
+recommendations.
 
-Acting first, however, moves the hard part of the interaction. Detection is a
-threshold problem and can be tuned. The difficulty is that a proactive robot
-speaks at a moment its user did not choose. Whoever it addresses may be typing
-with both hands, carrying something, mid-sentence with a colleague, wearing
-headphones, or simply not in the mood to have a conversation with a machine
-about their heart rate. A command-driven robot never faces this, because the
-user only ever initiates when they are free to. A proactive robot must be
-\emph{answerable} at a bad moment, and the reply channel --- not the sensing ---
-is where the interaction succeeds or fails.
+Physiological signals such as heart rate and electrodermal activity (EDA) are
+commonly used as indicators for autonomic arousal and stress
+\cite{healey2005stress, kim2018hrv}. Wearable devices make such signals
+continuously available outside tightly controlled laboratory setups, although
+substantial inter-individual variation and limitations in signal quality remain
+\cite{schuurmans2020e4, vanlier2020protocol}. This relates to Schmidt's concept 
+of implicit interaction, in which systems respond to contextual cues that the 
+user did not deliberately produce as commands \cite{schmidt2000implicit}.
+Human-state-aware interaction therefore offers an opportunity for robots to
+adapt without requiring the user to repeatedly articulate their needs.
 
-Proactive human-robot interaction is a well-surveyed field, and the timing and
-desirability of robot initiative have both received attention
-\cite{broek2024proactive, baraglia2016initiative}. Inference of latent states
-from physiological signals is likewise mature: heart-rate variability and
-electrodermal activity are established correlates of stress and arousal
-\cite{healey2005stress, kim2018hrv}, and interaction driven by sensed context
-rather than explicit input has been a design theme since Schmidt's account of
-implicit interaction \cite{schmidt2000implicit}. What is less common is a system
-that carries a latent state all the way from a wristband to a physical drink in
-a real kitchen, and rarer still is explicit treatment of how the person is meant
-to \emph{answer} once the robot has decided to speak.
+Proactivity introduces an additional problem, however. A command-driven robot is
+normally addressed at a time selected by the human. A proactive robot instead
+chooses when to initiate an interaction. Research on proactive HRI consequently
+emphasizes not only whether robots should take initiative, but also the
+circumstances in which such initiative is desirable
+\cite{baraglia2016initiative, broek2024proactive}. A potentially useful
+suggestion can still be disruptive if the user is occupied, already interacting
+with another person, unable to speak, or simply uninterested. For a state-aware
+robot, estimating \emph{what} might be useful and deciding \emph{when and how}
+to offer it are therefore separate questions.
 
-We built BrewBot to find out what that costs. BrewBot is a Kinova Gen3 6-DOF arm
-hanging from a motorised ceiling rail in \labname, an instrumented kitchen
-laboratory at LMU Munich. A heart-rate sensor and an Empatica E4 wristband feed a rule-based
-state estimator; when the estimate crosses into a state worth acting on, the
-robot greets the user by name, says what it noticed, and offers a drink. The
-user can accept by speaking, and a locally hosted language model classifies the
-reply, including counter-offers such as \emph{``no, but I'd like a coffee
-instead.''} They can also answer with a thumbs-up or thumbs-down to a camera. Or
-they can raise an open palm, which cuts the robot off mid-sentence and hands the
-entire dialogue over to the arm: it mimes each drink in turn with its own body
-and waits for a thumb. The chosen drink is then actually fetched --- a glass
-picked up, filled at the sink or dispensed by a networked coffee machine, and
-handed over.
+This becomes especially relevant when interaction is multimodal. Speech is
+convenient when the user is free to converse, but it is not always the cheapest
+or most appropriate response channel. Multimodal interaction research has long
+argued against treating modalities as interchangeable copies of one another and
+shows that users select modalities according to task and situational constraints
+\cite{oviatt1999myths}. In human-agent collaboration, related mixed-initiative
+perspectives emphasize that initiative and control may shift between human and
+system rather than belonging exclusively to one side \cite{cila2022designing}.
+For a proactive robot, multimodality can thus serve not only recognition
+robustness but also \emph{user control over the interaction itself}.
 
-The system was built by three students in a course project structured around an
-intensive on-site practical week, with preparatory work on arm control and
-kitchen modelling done beforehand and refinement afterwards (106 commits,
-roughly 4{,}600 lines of Python on ROS 2 Jazzy \cite{macenski2022ros2}). We
-report it here as a design case study rather than an empirical result: no user
-study has been run, so our claims are about what building the system forced us
-to design for. Three patterns recurred strongly enough that we believe they generalise
-beyond drinks. First, interaction modalities should be \emph{substitutable}
-rather than merely available in parallel: the open palm does not only stop
-speech, it re-routes the whole dialogue into embodied mime. Second, deciding
-\emph{what} to offer and deciding \emph{when} to interrupt are different
-concerns and belong in different components. Third, every subsystem that is not
-the drink itself must fail open, because in a real lab something is always down.
-We also record one scoping decision worth reporting: heart-rate variability is
-the best-documented stress marker available to us, but deriving it from the
-wristband's raw pulse waveform turned out to be a signal-processing project in
-its own right, so we dropped it from the state model and took heart rate from a
-dedicated sensor instead.
+We investigate these questions through BrewBot, an integrated robotic drink
+assistant. BrewBot combines physiological sensing, proactive beverage
+suggestions, speech, human hand gestures, robot gestures, smart-home devices,
+and physical manipulation in a shared kitchen environment. The beverage-serving
+task provides a concrete setting in which inferred human state can influence
+robot behavior while every suggestion still requires explicit human acceptance.
+We chose drink assistance because it turns an inferred state into a concrete, 
+low-stakes offer: an unsuitable suggestion can be declined, changed, or ignored 
+without serious consequence.
 
-\section{Background and Related Work}
+The project makes three main contributions as a design case. First, BrewBot
+integrates wearable and heart-rate sensing into an end-to-end robotic assistance
+pipeline in which approximate physiological state estimates inform
+context-dependent beverage suggestions. Second, users can accept, reject, or
+change suggestions through speech or gestures and can explicitly replace an
+ongoing verbal exchange with an embodied gesture-based interaction. Third,
+BrewBot connects state inference and interaction management to real physical
+actions, including drink preparation through smart-home infrastructure, delivery
+to different locations, and collaborative execution of tasks that cannot be
+fully automated.
 
-\paragraph{Proactive robots and the cost of initiative.}
-Koch van den Broek and Moeslund's review of proactive HRI shows a field that
-agrees proactivity is desirable but defines it inconsistently, ranging from
-anticipating a user's next subtask to initiating an unrelated conversation
-\cite{broek2024proactive}. Baraglia et al.\ found that in a collaborative task
-users preferred a robot that took initiative over one that waited, but that the
-benefit depended on the robot acting at points where the human was not already
-committed to an action \cite{baraglia2016initiative}. Both results point at the
-same design pressure that shaped BrewBot: initiative is welcome, but only if it
-is cheap for the user to dispose of. That framing puts unusual weight on the
-\emph{decline} path, which in a command-driven system barely exists.
+BrewBot was developed by a three-person student team around an intensive
+on-site practical phase, with preparatory work on sensing, arm control, and the
+kitchen setup before the final integration. The prototype was refined through
+repeated demonstration runs rather than through a formal study. These runs were
+used to test whether the complete interaction could proceed from sensed state to
+suggestion, human confirmation, and physical drink delivery, and they exposed
+the interruption, modality-switching, and legibility issues discussed below.
 
-\paragraph{Latent state from physiological signals.}
-Heart rate, heart-rate variability and electrodermal activity are long-standing
-markers of stress and sympathetic arousal. Healey and Picard classified driver
-stress from these signals in a real-world setting \cite{healey2005stress}, and
-Kim et al.'s meta-analysis confirms the HRV--stress relationship while
-documenting how much it varies across individuals and measurement protocols
-\cite{kim2018hrv}. That variance matters for a robot: absolute skin conductance
-differs by roughly two orders of magnitude between people, so any usable rule
-must be relative to a personal baseline rather than to a population threshold.
-Validation work on the specific device we used is instructive about where the
-effort sits. The Empatica E4's electrodermal and temperature channels hold up
-reasonably in a standardised assessment \cite{vanlier2020protocol}, whereas
-obtaining trustworthy HRV parameters from its wrist photoplethysmography is a
-considerably more delicate exercise \cite{schuurmans2020e4}. That asymmetry
-determined which signals we ended up using (\autoref{sec:signals}).
+Our goal is not to claim validated inference of psychological states or superior
+user experience. No controlled user study was conducted. Instead, BrewBot is
+presented as an integrated prototype from which we derive design considerations
+and testable hypotheses for future state-aware HRI systems.
 
-\paragraph{Implicit and multimodal interaction.}
-Schmidt described implicit interaction as a system acting on sensed context that
-the user did not intend as input \cite{schmidt2000implicit}; a physiological
-trigger is a direct instance. Oviatt's critique of multimodal interaction is
-equally relevant, and in a way we did not expect. Her central point is that
-users do not blend modalities constantly; they \emph{switch} between them, and
-they switch precisely when the situation makes one channel expensive
-\cite{oviatt1999myths}. A person holding a glass under a running tap is exactly
-that situation. This is the observation that BrewBot's answer layer is built
-around.
+\section{BrewBot System and Interaction Design}
 
-\paragraph{Language models in embodied systems.}
-Recent work grounds language models in robot capability so that free-form speech
-maps onto executable skills \cite{ichter2022saycan}. BrewBot uses a far smaller
-version of the same idea: a locally hosted model performs two jobs, generating
-the robot's greeting and classifying the user's reply into a closed label set
-supplied by the caller. We keep the model strictly outside the control path ---
-it never selects a motion --- which is what allows the whole dialogue layer to
-be absent without stopping the drink.
+\subsection{Architecture and Human-State Inference}
 
-\section{The BrewBot System}
+BrewBot operates in an instrumented lab kitchen at LMU Munich. The robotic
+platform consists of a ceiling-mounted Kinova Gen3 six-degree-of-freedom arm
+with a Robotiq 2F-140 gripper. The arm is attached to a motorized linear rail
+that allows it to travel between relevant areas of the kitchen, including the
+workstation, sink, and networked coffee machine. The system is implemented in
+ROS 2 \cite{macenski2022ros2}.
 
-\subsection{Setting and Platform}
-
-BrewBot operates in \labname, a U-shaped instrumented kitchen containing a sink,
-a networked espresso machine and a workstation. The robot is a Kinova Gen3 6-DOF arm with a
-Robotiq 2F-140 gripper, mounted upside down on an Elmo carriage that travels
-along a ceiling rail and can be raised and lowered. Because the arm hangs, its
-base-frame $z$ axis is inverted relative to intuition, and because it rides the
-rail, its base frame moves through the room during a task --- two facts that
-shape the whole motion layer.
-
-Sensing is split across three devices. A dedicated Bluetooth Low Energy
-heart-rate sensor publishes beats per minute. An Empatica E4 wristband provides electrodermal
-activity, skin temperature and three-axis acceleration, and its act of
-connecting doubles as an arrival signal. Three cameras run gesture recognition:
-one on the arm's wrist, one at the workstation, one in the kitchen area. Speech
-is captured by a microphone and transcribed by Vosk; the robot speaks through
-Piper. A workstation on the lab network runs Ollama with Llama 3.2, and Home
-Assistant bridges the espresso machine (over Home Connect) and the ceiling
-lights.
-
-\subsection{Architecture}
+Physiological sensing is distributed across a dedicated heart-rate sensor and an
+Empatica E4 wristband. The E4 provides electrodermal activity, skin temperature,
+and acceleration, while the separate heart-rate sensor directly reports heart
+rate in beats per minute. Cameras in the environment and on the robot support gesture
+recognition. Speech input is transcribed locally, speech output is produced
+on site, and a locally hosted language model supports the interpretation of
+free-form replies. Home Assistant connects BrewBot to smart-home infrastructure
+including the coffee machine and lights. In the implemented system, these functions 
+are distributed across ROS 2 nodes for sensing, state estimation, triggering, 
+interaction management, speech input and output, gesture recognition, arm control, 
+and smart-home actuation. This structure matters for the interaction as well as the 
+architecture: sensing, interruption, dialogue, and physical action can be adjusted 
+independently. When non-essential components fail, the system can still preserve 
+the user's control over whether a drink is prepared or delivered.
 
 \begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   every node/.style={font=\small},
-  box/.style={draw, rounded corners=2pt, align=center, inner sep=3.5pt,
-              minimum height=8mm, font=\small},
-  dev/.style={box, fill=black!6, font=\footnotesize},
-  aux/.style={box, fill=black!3, font=\footnotesize},
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=4pt,
+              minimum height=9mm, font=\small},
+  smallbox/.style={box, font=\footnotesize},
   flow/.style={-{Stealth[length=2mm]}, semithick},
   back/.style={-{Stealth[length=2mm]}, semithick, dashed},
   lbl/.style={font=\scriptsize, inner sep=1.5pt, fill=white}
 ]
 
-% main chain
-\node[dev] (sens) at (0,0) {HR sensor\\Empatica E4};
-\node[box] (est)  at (3.5,0) {\texttt{state\_}\\\texttt{estimator}};
-\node[box] (trig) at (6.7,0) {\texttt{trigger}};
-\node[box] (im)   at (10.4,0) {\texttt{interaction\_}\\\texttt{manager}};
-\node[box] (arm)  at (14.6,0) {\texttt{arm\_}\\\texttt{controller}};
+\node[smallbox] (sense) at (0,0) {Physiological \&\\Contextual\\Sensing\\
+{\scriptsize HR, EDA,}\\[-1mm]{\scriptsize temperature,}\\[-1mm]{\scriptsize motion, presence}};
+\node[smallbox] (infer) at (3.2,0) {Human-State\\Inference\\
+{\scriptsize coarse candidate}\\[-1mm]{\scriptsize state + drink}\\[-1mm]{\scriptsize suggestion}};
+\node[smallbox] (policy) at (6.4,0) {Interruption\\Policy\\
+{\scriptsize when to initiate}\\[-1mm]{\scriptsize an offer}};
+\node[smallbox] (multi) at (9.6,0) {Multimodal\\Interaction\\
+{\scriptsize speech, human}\\[-1mm]{\scriptsize gestures, robot}\\[-1mm]{\scriptsize gestures}};
+\node[smallbox] (confirm) at (12.8,0) {Human\\Confirmation\\
+{\scriptsize accept, reject,}\\[-1mm]{\scriptsize change, or stop}};
+\node[smallbox] (act) at (16.0,0) {Physical\\Action\\
+{\scriptsize robot arm +}\\[-1mm]{\scriptsize smart-home devices}};
 
-% dialogue periphery
-\node[aux] (tts) at (9.2,1.9) {\texttt{tts} $\cdot$ \texttt{asr}};
-\node[aux] (llm) at (10.4,-2.1) {\texttt{llm} $\rightarrow$ Ollama};
+\draw[flow] (sense) -- (infer);
+\draw[flow] (infer) -- node[lbl, above]{what to offer} (policy);
+\draw[flow] (policy) -- node[lbl, above]{when to interrupt} (multi);
+\draw[flow] (multi) -- (confirm);
+\draw[flow] (confirm) -- (act);
 
-% perception + actuation periphery
-\node[aux] (ges) at (13.4,1.9) {gesture recognisers\\{\scriptsize (3 cameras)}};
-\node[aux] (ha)  at (14.6,-2.1) {coffee machine $\cdot$ light\\{\scriptsize via Home Assistant}};
+\node[smallbox] (sub) at (9.6,-2.1) {Modality\\substitution\\
+{\scriptsize open palm: speech}\\[-1mm]{\scriptsize to gesture mode}};
+\node[smallbox] (human) at (14.4,-2.1) {Human\\contribution\\
+{\scriptsize e.g., filling the}\\[-1mm]{\scriptsize glass at the faucet}};
 
-% stage labels
-\node[font=\footnotesize\itshape, gray] at (0,3.0) {sense};
-\node[font=\footnotesize\itshape, gray] at (3.5,3.0) {infer};
-\node[font=\footnotesize\itshape, gray] at (6.7,3.0) {interrupt};
-\node[font=\footnotesize\itshape, gray] at (10.0,3.0) {converse};
-\node[font=\footnotesize\itshape, gray] at (14.6,3.0) {act};
-
-\draw[flow] (sens) -- node[lbl, above]{\scriptsize HR, EDA,}
-                      node[lbl, below]{\scriptsize temp, motion} (est);
-\draw[flow] (est) -- node[lbl, above]{\texttt{GetUserState}} node[lbl, below]{\texttt{/user\_spike}} (trig);
-\draw[flow] (trig) -- node[lbl, above]{\texttt{SuggestDrink}} (im);
-\draw[flow] (im) -- node[lbl, above]{\texttt{BringDrink}} (arm);
-
-\draw[flow] (im) -- (tts);
-\draw[flow] (im) -- (llm);
-\draw[flow] (ges) -- (arm);
-\draw[flow] (arm) -- (ha);
-\draw[flow] (ges) -- node[lbl, above, pos=0.55]{gesture} (im);
-
-% re-entrant call from the arm back into the dialogue layer
-\draw[back] (arm.south west) .. controls +(-1.6,-1.1) and +(1.6,-1.1) ..
-  node[lbl, below, pos=0.5]{\texttt{AskForWater} (mid-motion)} (im.south east);
-
-% arrival event
-\draw[back] (sens.south) .. controls +(0,-1.5) and +(0,-1.5) ..
-  node[lbl, below, pos=0.5]{\texttt{/user\_arrived}} (trig.south);
+\draw[back] (multi) -- (sub);
+\draw[back] (sub) -- (multi);
+\draw[back] (act) -- (human);
+\draw[back] (human) -- (act);
 
 \end{tikzpicture}
-\caption{BrewBot's ROS 2 graph. Solid arrows are the forward path from sensing
-to action; dashed arrows are the two feedback paths that make the system
-interactive rather than a pipeline --- the wristband's arrival event, and the
-arm calling back into the dialogue layer \emph{while holding a glass under the
-tap}.}
-\Description{A block diagram with five stages left to right: sensors, state
-estimator, trigger, interaction manager, arm controller, with peripheral nodes
-for speech, language model, gesture recognition and home automation.}
-\label{fig:arch}
+\caption{Conceptual architecture of BrewBot. Physiological and contextual
+signals are transformed into a candidate user state. The state estimator
+informs, but does not itself initiate, interaction. A separate interaction
+policy determines whether a suggestion should be made. Users can then respond
+through speech or gestures before the accepted action is transferred to the
+robot and smart-home components. Dashed feedback arrows illustrate modality
+substitution and the human contribution required during collaborative tasks such
+as filling a glass at the tap.}
+\Description{A left-to-right conceptual diagram from physiological sensing to
+human-state inference, interruption policy, multimodal interaction, human
+confirmation and physical action, with feedback boxes for modality substitution
+and human contribution.}
+\label{fig:concept}
 \end{figure*}
 
-\autoref{fig:arch} shows the node graph. Read left to right it is a
-conventional sense--infer--interact--act pipeline, and each stage is a separate
-ROS 2 node communicating over typed actions and services. Two properties of this
-decomposition did real work for us and are not visible from the node names.
+Conceptually, BrewBot follows a sense--infer--interact--act architecture
+(\autoref{fig:concept}). A central design decision is that the state estimator
+itself remains passive. It maintains the current sensor-derived state and
+corresponding beverage suggestion but does not command the robot to approach or
+interrupt the user. A separate trigger and interaction layer decides when a
+state estimate should result in a proactive offer. This distinction separates
+two questions with fundamentally different inputs:
 
-The first is that \texttt{state\_estimator} is \emph{passive}. It caches sensor
-readings and answers a \texttt{GetUserState} service; it never sends a goal to
-anyone. All policy about interrupting a human lives in \texttt{trigger}. The
-second is the dashed arrow returning from \texttt{arm\_controller} to
-\texttt{interaction\_manager}: the arm asks the dialogue layer to talk to the
-user in the middle of a motion, while the higher-level dialogue goal that
-started the motion is still open. That single re-entrant edge is what makes the
-sink interaction possible, and it is why both nodes run multi-threaded
-executors.
+\paragraph{What might be appropriate to offer?}
+This depends primarily on physiological and activity-related cues.
 
-\subsection{From Signals to a Suggestion}
-\label{sec:signals}
+\paragraph{Is it appropriate to initiate an interaction now?}
+This additionally depends on interaction history, whether the user is present,
+whether another interaction is already active, and whether the same state has
+already triggered an offer recently.
 
-The estimator reduces four cached signals to a state and a drink using a pure
-decision function of about twenty lines. Thermal signals are consulted first:
-skin temperature at or above 35\,\textdegree C yields \emph{hot} and suggests
-water, at or below 31\,\textdegree C yields \emph{cold} and suggests tea. Smoothed
-motion is consulted next, yielding \emph{active}. Only then is arousal read: a
-heart rate at least 10\,bpm above the user's baseline, or an electrodermal
-reading at least 15\% above its own running baseline, yields \emph{stressed} and
-suggests tea; an electrodermal reading 15\% \emph{below} baseline yields
-\emph{fatigued} and suggests coffee. Anything else is \emph{calm} and produces no
-offer at all.
+The estimator uses a deliberately simple rule-based approach. Skin temperature,
+motion, heart rate relative to a configured baseline value, and EDA relative to a
+running baseline are combined into approximate user-state categories. Thermal and 
+activity cues are considered before arousal-related cues so that obvious physiological
+confounds, such as an elevated heart rate during movement, are less likely to be
+interpreted directly as an affective state. The resulting internal states
+include \emph{hot}, \emph{cold}, \emph{active},
+\emph{stressed/elevated arousal}, \emph{fatigued/low arousal}, and
+\emph{calm}. They map to illustrative beverage policies such as water for heat
+or activity, tea for cold or elevated arousal, and coffee for low-arousal
+conditions.
 
-The ordering is the substantive design decision. Heat drives electrodermal
-activity and movement drives heart rate, so reading arousal first would let
-\emph{hot}, \emph{active} and \emph{stressed} compete for the same evidence.
-Excluding the two physical confounds before interpreting arousal is what keeps
-the rule set honest. The electrodermal thresholds are relative to an
-exponentially weighted baseline seeded on the first sample, for the
-between-subject reasons discussed in the literature \cite{kim2018hrv}; dry
-electrodes also need minutes to equilibrate, which a session-start baseline
-would capture at exactly the wrong moment.
+These labels must be understood as operational categories used by the prototype
+rather than validated diagnoses. Heart rate or EDA alone do not establish that
+a person is stressed, nor does reduced EDA establish fatigue. The mapping
+between physiological cues, inferred state, and drink should therefore be
+interpreted as a demonstrator for adaptive interaction rather than as a medical
+or physiological recommendation.
 
-Two signals named in our original design are absent from that rule set, and the
-reason is worth stating plainly. The E4 exposes no heart-rate characteristic ---
-only a 64\,Hz blood-volume-pulse waveform --- so both heart rate and HRV would
-have had to be derived in our own code. The waveform carries the pulse; the
-difficulty is not the sensor but the analysis. Recovering beat-to-beat intervals
-precise enough for HRV from wrist photoplethysmography is a signal-processing
-task in its own right, and HRV is defined on exactly those intervals. Our first
-attempt at beat detection illustrates the gap: replaying a reference recording,
-intervals scattered between 0.51 and 1.22 seconds where the true value sat near
-1.03. Autocorrelation over an eight-second window recovered a usable pulse
-\emph{rate} of 55--64\,bpm, but not usable intervals. Doing this properly was a
-larger undertaking than the rest of the estimator combined, for the estimator's
-least load-bearing input, so we made the pragmatic call: drop HRV from the state
-model, and take heart rate from a dedicated BLE sensor that reports beats per
-minute directly. The wristband kept the channels it measures without
-inference --- electrodermal activity, skin temperature and acceleration --- which
-is also where the published validation is strongest
-\cite{vanlier2020protocol, schuurmans2020e4}.
+Heart-rate variability (HRV) was considered during development because of its
+established relation to stress \cite{kim2018hrv}. Reliably deriving
+beat-to-beat intervals from the E4's wrist photoplethysmography, however,
+introduced a signal-processing problem beyond the scope of the project. BrewBot
+therefore uses a separate heart-rate sensor and retains the E4 primarily for
+EDA, skin temperature, and motion. This pragmatic division also reflects
+published validation work showing that physiological measures from wrist-worn
+devices are sensitive to measurement conditions and signal quality
+\cite{schuurmans2020e4, vanlier2020protocol}.
 
-\subsection{Deciding When to Interrupt}
+To prevent momentary fluctuations from immediately producing unsolicited
+interaction, BrewBot requires persistent evidence of a relevant state change and
+applies a cooldown after proactive suggestions. This is not intended to solve
+the broader problem of interruption timing, but it avoids a simple failure mode
+in which noisy or persistent physiological conditions cause repeated offers.
 
-\texttt{trigger} owns interruption policy and has four ways in. The wristband
-connecting publishes an arrival event; until that fires, nothing can start a
-conversation, because there is nobody to talk to. Thereafter the estimator's
-1\,Hz self-check can publish a spike event, an optional slow poll re-asks every
-60 seconds, and a keyboard interface lets an experimenter force any drink.
+\subsection{Proactive and Multimodal Interaction}
 
-Spike detection deserves a note because it is a small idea that removed a large
-class of misbehaviour. The estimator's decision function already encodes
-``elevated'', so the spike detector does not re-implement a threshold; it watches
-that function's output cross from producing no suggestion to producing one. It
-fires when three consecutive samples agree --- heart rate from a wrist is noisy,
-and one stray sample must not start a conversation --- and only once per episode,
-with a five-minute cooldown. A user who is simply \emph{still} stressed generates
-no further offers. Reactive proactivity without this property degrades into
-nagging, which is the failure mode the initiative literature warns about
-\cite{broek2024proactive}.
+BrewBot treats physiological inference as a basis for offering assistance, not 
+as an authorization to act. Even when BrewBot derives a candidate state and 
+corresponding beverage, it does not automatically prepare the drink. 
+Instead, the robot makes an offer and waits for confirmation. The user may 
+accept, reject, or request another available beverage. This distinction 
+preserves human agency despite the proactive nature of the system.
 
-\subsection{Speaking and Understanding}
+The default interaction channel is verbal. BrewBot can address the user,
+explain or contextualize its suggestion, and ask whether the proposed drink is
+desired. Speech recognition converts the reply to text, after which a locally
+hosted language model classifies the response into a restricted set of
+meaningful outcomes. This allows responses that are more expressive than simple
+yes/no answers. For example, a reply such as ``No, but I'd rather have coffee''
+can be interpreted simultaneously as rejection of the suggestion and selection
+of an alternative beverage.
 
-The dialogue layer is deliberately small. A single \texttt{AskLLM} service
-carries a prompt and a system prompt, and its behaviour switches on whether the
-system field is empty. Empty means the language model uses its own barista
-persona and writes the greeting, at temperature 0.6 so the same sentence is not
-repeated three times in a row. Filled means the caller has turned the node into a
-classifier and named the exact labels it will accept, at temperature 0 so a given
-utterance always classifies the same way.
-
-The language-model node is stateless: no session, no history. Context is
-assembled by the caller, which sends the pair \emph{``the robot asked X / the
-person said Y''}. This is not an optimisation but the reason the system can
-handle a counter-offer. \emph{``No, but I'd like a coffee instead''} is a refusal
-and an order at once, and only parses correctly when the question is in view; a
-bare yes/no classifier --- which is what we used before, based on sentence
-embeddings --- resolved it to ``no'' and walked away. The classifier's label set
-is therefore \{YES, NO\} plus every drink on the menu, so naming a different
-drink is itself a valid answer.
-
-Everything in this layer returns the empty string on failure --- unreachable
-model, timeout, or an answer outside the label set. Each caller's decision is
-binary, use the answer or fall back to a fixed line, and that decision is the same
-whichever way it failed. The diagnostic reason is logged where it occurred and
-never crosses an interface boundary. With the language model down, BrewBot still
-asks its question, in canned wording, and still fetches what it is told.
-
-\subsection{Answering in Whatever Modality Is Free}
+The language model is intentionally kept outside the robot's physical control
+path. It can generate or interpret language but cannot introduce unsupported
+drinks or directly select robot motions. If language processing fails, BrewBot 
+falls back to predefined prompts and responses. This confines the least 
+deterministic component of the system to communication rather than physical 
+control.
 
 \begin{figure}[t]
 \centering
@@ -328,209 +251,240 @@ asks its question, in canned wording, and still fetches what it is told.
   \includegraphics[width=\linewidth]{figures/thumb.png}
   \caption{}\label{fig:mod-c}
 \end{subfigure}
-\caption{Modality substitution. (a) The user raises an open palm, cutting the
-robot off mid-sentence. (b) Rather than abandoning the offer, the arm mimes each
-drink with its own body. (c) The user answers with a thumbs-up. The conversation
-continues, having changed modality on the user's terms.}
+\caption{Modality substitution in BrewBot. (a) The user raises an open palm
+during a verbal offer, stopping the speech channel. (b) The robot continues the
+interaction by physically miming the available beverage options. (c) The user
+accepts or rejects the currently presented option with a thumbs-up or
+thumbs-down. The interaction therefore continues after the user has rejected
+the original communication modality.}
 \Description{Three photographs showing a user raising a palm, a robot arm
 performing a drink-miming motion, and the user giving a thumbs-up.}
 \label{fig:modality}
 \end{figure}
 
-This is the part of BrewBot we consider its contribution. Every question the
-robot asks goes through one function, which speaks a line, opens the microphone,
-and simultaneously accepts hand gestures from a shared topic fed by all three
-cameras. Gestures are recognised with MediaPipe's pre-trained recogniser
-\cite{lugaresi2019mediapipe}, restricted to thumbs-up, thumbs-down and open
-palm, and confirmed only after three consecutive frames.
+Human hand gestures provide a second reply channel. MediaPipe
+\cite{lugaresi2019mediapipe} is used to recognize three deliberately restricted
+gestures: thumbs up, thumbs down, and open palm. Recognition is stabilized
+across consecutive frames before a gesture is accepted. Gesture semantics depend
+on the interaction context rather than being defined globally. A thumbs-up may
+indicate acceptance of a drink offer, while during another task it can indicate
+that a human contribution has been completed.
 
-Crucially, the meaning of a gesture is supplied \emph{per question} rather than
-fixed globally. When the robot offers a drink, an open palm means stop; when the
-robot is holding a glass under a running tap, both an open palm \emph{and} a
-thumbs-up mean ``done'', because a person mid-pour will not free a hand to
-produce a specific one. The same physical gesture answers different questions
-differently, which is what lets one dialogue primitive serve situations with very
-different physical constraints.
+The "open-palm" gesture illustrates this context-dependent design. During verbal 
+interaction, an open palm immediately stops ongoing speech. It then publishes 
+a stop signal for text-to-speech and marks the drink request so that the arm 
+controller offers the menu through predefined mime motions. The gesture therefore 
+rejects the current communication modality, but not necessarily the underlying 
+offer. BrewBot can then transfer the remaining interaction from speech to an 
+embodied gesture mode.
 
-The open palm is the clearest case (\autoref{fig:modality}). It publishes a stop
-event that drains the speech queue and terminates audio playback, so the robot
-falls silent mid-sentence. But it does not cancel the offer. It sets a flag on
-the fetch request, and the arm then performs the menu physically: for each drink
-in turn it shapes the gripper, executes a two-pose miming motion, turns to face
-the user, adds a small wrist tilt that reads as a questioning head-tilt, and
-waits ten seconds for a thumb. A thumbs-up selects that drink; a thumbs-down
-moves to the next; a second open palm ends the offer entirely. The estimator's
-own suggestion is mimed first, because it is the drink the sensors indicate is
-most likely --- not because the user has already heard it named. Frequently they
-have not: the palm often arrives before the robot reaches the end of its
-sentence, which is precisely the point of having it.
+In gesture mode, the robot represents available beverages through predefined arm
+and gripper motions. It orients toward a predefined user-facing pose, performs
+the corresponding drink gesture, and waits for feedback. A thumbs-up selects the
+presented drink; a thumbs-down proceeds to another option; an additional
+open-palm response can end the offer.
 
-Which way the arm turns is decided from person detection on the two fixed
-cameras, running EfficientDet-Lite0 at 2\,Hz. The arm faces the kitchen only when
-the kitchen camera sees someone and the workstation camera does not; the
-workstation is the default and the tie-break. The wrist camera is deliberately
-excluded from this decision --- what it sees is a fact about where the arm is
-pointing, not about where the user is standing --- but it does contribute to
-recognition, since all three cameras publish into the same gesture topic. An
-answer can therefore be seen whether or not the arm is facing the user. The turn
-is not for perception; it is for legibility. A 6-DOF arm holding still is
-indistinguishable from a 6-DOF arm that has finished, and the swing plus the
-small wrist tilt are the only cues that a question is outstanding and the pause
-belongs to the person.
+This distinction leads to an important design observation: \emph{rejecting a
+modality is not necessarily the same as rejecting the interaction}. BrewBot
+therefore treats speech and gesture as substitutable channels rather than merely
+two interfaces available in parallel. The open palm functions as a form of
+modality negotiation: the human can determine not only the answer to the robot's
+question, but also how the conversation should proceed.
 
-\subsection{Fetching the Drink}
+\subsection{Embodied Drink Assistance}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.86\linewidth]{figures/sink.png}
-\caption{Waiting at the sink. The arm holds the glass under the tap while the
-dialogue layer listens for ``done''. Because a stationary robot reads as a
-crashed robot, the wait escalates: a wrist wiggle every 15 seconds, then the lab
-light begins to blink after 40.}
-\Description{A robot arm holds a glass under a kitchen tap.}
-\label{fig:sink}
-\end{figure}
+Once a beverage is explicitly accepted, interaction becomes physical. BrewBot 
+combines stored task poses with motion planning to pick up a glass or cup, 
+travel between stations using the ceiling rail, interact with available 
+appliances, and deliver the resulting drink to a predefined location such as 
+the user's desk.
 
-Fetching is a sequence of skills over one arm, one gripper and one rail. Named
-poses are stored in joint space and are executed either through MoveIt
-\cite{coleman2014moveit} for collision-aware planning or through a direct
-trajectory controller, both driven from the same table so the two backends cannot
-disagree about the destination. Rail and arm are planned separately: the arm is
-first moved to a compact tuck pose that is safe by construction, the carriage
-then travels with the arm frozen, and the kitchen's collision geometry is
-re-published afterwards because the planning frame itself has moved.
+Coffee and hot water for tea can be requested through the networked coffee
+machine via Home Assistant and Home Connect. The robot places the cup at the 
+coffee machine, starts the drink program through Home Assistant, waits for 
+dispensing, and then delivers the cup. The details of motion planning are 
+deliberately secondary to the HRI design: from the user's perspective, the 
+important property is that a conversational or gestural decision leads to a 
+visible physical outcome in the shared environment.
 
-Water is the interesting case, because BrewBot cannot operate the tap. It picks
-up a glass, travels to the sink, holds the glass under the tap, and asks the
-person to fill it --- which is the re-entrant call in \autoref{fig:arch}. A robot
-standing still holding a glass looks exactly like a robot that has crashed, so
-the wait is an escalation ladder (\autoref{fig:sink}): every 15 seconds the wrist
-performs a small wiggle, after 40 seconds the ceiling light begins to blink, and
-after roughly two minutes the arm gives up and returns the glass. Both nudges
-fail open: no light bridge or no trajectory controller costs the feedback, never
-the water. Coffee and tea take the other route, through a Home Connect espresso
-machine; tea is the machine's hot-water programme at 70\,\textdegree C with the
-bag added by hand. If the machine is unreachable, the arm says so aloud and holds
-its pose for a fixed interval so a human can pour instead --- again, degraded but
-not stopped.
+Water requires a different interaction pattern because BrewBot cannot operate 
+the tap itself. The robot picks up a glass, positions it under the faucet, and 
+requests human assistance through the interaction system while holding the glass 
+in place. The human opens the tap, fills the glass, and closes it again before 
+signalling completion through speech or gesture. Rather than treating the 
+inability to manipulate the faucet as a failure, the task becomes a small 
+instance of \emph{human--robot collaborative execution} in which each participant
+contributes the action they can perform more easily.
+
+This interaction also exposed a problem of robot legibility. While waiting under
+the faucet, a stationary arm can be difficult to distinguish from a robot that
+has stopped functioning. BrewBot therefore uses staged non-verbal attention cues 
+when the wait becomes prolonged: the arm first performs a small wrist movement 
+while continuing to hold the glass, and then the smart lights blink to provide 
+an additional environmental cue. These actions communicate system state without 
+requiring repeated spoken interruptions.
+
+The same principle motivates the robot's orientation during gesture
+interaction. Turning toward the user and adding visible questioning movements is
+not necessary merely for gesture recognition; it helps communicate that an
+interaction is active and that the next action belongs to the human. BrewBot
+thus uses physical motion both instrumentally, to manipulate objects, and
+communicatively, to make the interaction state more legible.
 
 \section{Design Reflections}
 
-\subsection{Make modalities substitutable, not merely available}
+BrewBot was developed as an integrated course prototype rather than as a
+controlled experiment. The following observations should therefore be
+interpreted as design reflections and hypotheses, not validated design
+principles.
 
-Offering speech \emph{and} gestures is not the same as letting one stand in for
-the other. Oviatt's observation that users switch channels when a channel becomes
-expensive \cite{oviatt1999myths} showed up in our system as a concrete
-requirement: the reply is often given in the modality the user's body happens to
-have free, and that is not knowable in advance. Two design commitments followed.
-Gesture meanings are per-question rather than global, so a thumbs-up can mean
-``yes'' to an offer and ``finished'' at a tap. And refusing a channel is not
-refusing the interaction --- the palm means ``stop talking'', so the robot stops
-talking and asks with its arm instead. Building this cost us one shared gesture
-topic and one extra field on the fetch request. The concept was cheap; only its
-consequences for timing were not.
+\subsection{Separate State Inference from Interruption Policy}
 
-\subsection{Separate what to offer from when to interrupt}
+An early architectural temptation in a state-aware robot is to let the inference
+component directly trigger behavior: if the system identifies a relevant state,
+it immediately sends a corresponding robot command. BrewBot instead separates
+state estimation from interaction initiation.
 
-Our first version had the estimator send goals directly when it detected a state.
-That conflates two questions with different owners. What the user needs is a
-function of sensor readings. Whether now is an acceptable moment to interrupt
-depends on arrival, recency, whether a conversation is already running, and
-whether the same offer was declined two minutes ago --- none of which the
-estimator can see. Making the estimator a passive service and moving all policy
-into a trigger node meant the cooldown, the arrival latch and the once-per-episode
-spike rule were all written once, in one place, and could be changed without
-touching inference. For a class of system where the entire risk is being
-annoying, we would now treat this split as the default rather than a refinement.
+This separation matters because \emph{what to offer} and \emph{when to
+interrupt} depend on different information. Physiological measurements may
+suggest that water or another beverage could be appropriate, but they do not
+indicate whether the user is currently available for interaction. Arrival,
+recent offers, an ongoing dialogue, previous rejection, and the persistence of a
+sensor condition all influence whether initiating another interaction is
+sensible.
 
-\subsection{Let everything that is not the goal fail open}
+Keeping these responsibilities separate also makes different intervention
+policies possible without changing the state estimator. More sophisticated
+future policies could incorporate explicit availability cues, task context,
+learned interruption preferences, or confidence in the estimated state while
+retaining the same sensing pipeline.
 
-In a shared lab, on any given day, something is unavailable: the language-model
-host, the microphone, the coffee machine, the light bridge, the motion planner.
-A system that treats these as preconditions is a system that mostly does not run.
-BrewBot therefore degrades along a fixed rule: anything that is not the drink
-itself fails open. No language model means canned wording. No dialogue stack
-means the arm hands over an empty glass instead of wedging. No coffee machine
-means the robot announces the problem and waits for a human. Reviewing the code
-afterwards, a substantial share of the physical layer is fallback path rather
-than nominal path, and we consider that proportion appropriate rather than
-regrettable.
+\subsection{Make Modalities Substitutable and Preserve User Agency}
 
-\subsection{Keep the language model out of the control path}
+Simply supporting speech and gestures does not make an interaction meaningfully
+multimodal. BrewBot's more consequential design choice is that one channel can
+replace another while preserving the interaction state.
 
-The language model writes what the robot says and interprets what it hears, and
-does nothing else. It never selects a motion, and it cannot introduce a drink.
-The menu lives in a single table that gives, for each drink, the word a person
-says for it and the route that produces it --- the sink, or a named programme on
-the coffee machine. That one table is simultaneously what the estimator may
-suggest, what the reply classifier will accept as an answer, what the arm knows
-how to mime and fetch, and what the machine will brew. Each component verifies
-itself against it at start-up, so a drink that cannot actually be produced fails
-at launch rather than halfway through a motion with a glass already in the
-gripper. The effect is that the least predictable component in the system can
-only ever affect wording and interpretation, both of which have defined
-fallbacks. Given how readily a small model answers slightly outside the labels it
-was given --- and it does, however firmly the prompt forbids it --- we would not
-have been comfortable with a looser boundary.
+The open-palm mechanism illustrates this directly. The user can reject speech
+without rejecting the underlying beverage offer, after which the robot continues
+through physical gestures. Gesture meanings are furthermore interpreted relative
+to the current question, allowing the same limited vocabulary to function under
+different physical constraints.
+
+This design is closely connected to human agency. BrewBot initiates interaction
+based on information the user did not deliberately provide as a command. Such
+implicit input should not silently become authorization for physical action. We
+therefore maintain the sequence:
+\begin{quote}
+sensed cue $\rightarrow$ candidate state $\rightarrow$ suggestion $\rightarrow$
+human confirmation $\rightarrow$ physical action
+\end{quote}
+rather than:
+\begin{quote}
+sensed cue $\rightarrow$ inferred state $\rightarrow$ physical action
+\end{quote}
+
+The human can accept the suggestion, reject it, choose an alternative, change
+the communication modality, or terminate the interaction. In this sense,
+proactivity determines who may \emph{start} the interaction, but not who has
+final authority over the resulting action.
 
 \section{Limitations}
 
-BrewBot has not been evaluated with users. Everything above is a design account
-supported by development experience, not by measurement, and the patterns we
-propose are hypotheses about what matters rather than findings. The estimator's
-thresholds are principled but uncalibrated: they were chosen from the literature
-and from resting values, not fitted against self-reported ground truth, and there
-is no per-user calibration period. The drink poses are hard-coded in joint space,
-so the world must not move --- a glass placed 10\,cm from where it belongs is not
-picked up. Sessions were demonstration-length rather than deployments, and a
-single trigger policy was in use throughout, so we cannot say how the offer rate
-would feel over a working day. Finally, physiological data is sensitive personal
-data; our prototype logged it locally in a research setting, and any longer-term
-deployment would need a consent and retention story we did not have to build.
+BrewBot was demonstrated and iteratively developed by the project team, but 
+the system was not evaluated with independent participants in a user study. 
+We therefore cannot conclude that its proactive behavior is perceived as 
+useful rather than intrusive, that its robot gestures are intuitively 
+understandable, or that allowing users to (seamlessly) switch modalities 
+improves the interaction.
+
+A second limitation concerns human-state inference. The current estimator is
+heuristic and has not been calibrated against self-reported ground truth.
+Physiological measures vary substantially between people and can be affected by
+movement, environment, sensor placement, and other factors unrelated to the
+states represented by BrewBot's labels. Although relative baselines and explicit
+handling of some physical confounds improve the rule set, the resulting
+categories remain tentative hypotheses rather than validated state estimates.
+
+The mapping from states to beverages is similarly illustrative. A person with
+elevated arousal does not necessarily want tea, and a low-arousal signal does
+not imply that coffee is desirable. Beverage selection is therefore best
+understood as an adaptive interaction policy chosen for the prototype. A
+deployable system would need a preference model or recommender component that 
+learn from repeated acceptance and rejection rather than apply one mapping to 
+all users.
+
+The physical system also relies strongly on a structured environment. Many
+poses and object locations are predefined, which limits robustness when cups or
+other objects are moved. The current interaction was tested over
+demonstration-length sessions rather than long-term deployment, so the
+acceptability of proactive offers over several hours or days remains untested.
+
+Finally, physiological sensing raises privacy considerations beyond those of a
+conventional drink-serving robot. Signals such as heart rate and EDA constitute
+personal data and may permit inferences users did not explicitly intend to
+communicate. The prototype operates locally in a research environment, but
+long-term use would require explicit decisions about consent, transparency,
+storage, retention, and the user's ability to disable state-aware behavior.
 
 \section{Future Work}
 
-The single highest-leverage next step is fiducial-based perception. Placing
-AprilTags \cite{olson2011apriltag} in the kitchen and on the drink station would
-let a one-shot calibration anchor the fixed cameras and the objects in a room
-frame, which the arm can then convert into its own moving base frame from the
-rail's position feedback. This one addition unlocks three capabilities we
-currently lack, and they compound. Hand-over and drop-off become dynamic: the
-robot can deliver where the cup actually is, rather than to a fixed pose the user
-must walk to. Cup pick-up becomes autonomous rather than dependent on a glass
-being pre-placed within a millimetre budget. And, most interesting for the
-interaction, the arm can look into the cup and judge whether it is empty. That
-last one closes a loop the physiological layer cannot close on its own: finishing
-a drink is a far better refill trigger than any wrist signal, and it converts
-BrewBot from a system that offers once into one that keeps a person supplied.
+An empirical evaluation of the interaction design would be a useful next step, 
+alongside further robotic capabilities. A within-subjects study could compare 
+proactive state-aware assistance with user-initiated service, measuring 
+perceived intrusiveness, usefulness, trust, usability, and task load. 
+A second factor could compare speech-only interaction with the substitutable 
+speech-and-gesture design. Such a study would directly test the hypothesis 
+emerging from BrewBot that allowing users to replace an inconvenient interaction 
+modality can make proactive assistance easier to manage.
 
-Beyond perception, three directions follow from the limitations. A short
-per-user calibration period would replace population thresholds with personal
-ones, which the between-subject variance in the literature suggests is where most
-of the accuracy is \cite{kim2018hrv}. Breadth is the other axis: every additional
-drink currently needs a validated motion sequence and, where the machine is
-involved, a confirmed programme identifier, and a per-user preference table would
-let the same physical state map to different drinks for different people --- tea
-for one person's fatigue, coffee for another's. And the obvious study is now
-designable: a within-subjects comparison
-of proactive against command-driven service in the same kitchen, measuring
-perceived intrusiveness, trust and task load, with a second factor varying which
-reply modalities are offered. Our claim that substitutability matters more than
-availability is exactly the kind of claim such a study would test.
+Gesture comprehensibility is another open question. The human gestures used by
+BrewBot are intentionally simple, but the robot's beverage mimes are designed
+rather than universally established symbols. Future work should therefore test
+whether users can correctly interpret these gestures without prior instruction
+and whether different robot motions convey waiting, questioning, or offering
+states as intended.
+
+Human-state inference should also become individualized and uncertainty-aware. A
+short calibration phase could establish personal baselines for physiological
+measures, while repeated interaction could allow the system to learn individual
+mappings between state, context, and beverage preference. Instead of treating a
+rule as ``low arousal implies coffee,'' the system could learn that a particular
+user repeatedly chooses water or declines assistance in that context. Confidence
+estimates could additionally allow BrewBot to refrain from proactive interaction
+when the available sensor evidence is ambiguous.
+
+Longer-term interaction also requires adaptive interruption policy. Repeated
+rejection should influence future behavior, and the system should learn both
+\emph{what} a person tends to accept and \emph{when} they prefer not to be
+interrupted. This would extend BrewBot from a state-aware system toward a
+genuinely personalized mixed-initiative assistant.
+
+On the physical side, fiducial markers such as AprilTags
+\cite{olson2011apriltag} or more general object perception could reduce
+dependence on hard-coded poses and enable dynamic cup pickup and placement.
+Detecting whether a cup is present or empty could also provide task-context
+information that complements physiological sensing. Such environmental evidence
+may in many situations be more directly relevant to the need for a refill than a
+physiological cue alone.
 
 \section{Conclusion}
 
-BrewBot infers a latent physical state from wearable sensors and decides on its
-own that a person might want a drink --- but it then \emph{asks}. It says what it
-noticed, names the drink it has in mind, and fetches something only once the
-person has accepted, whether they accept in words, with a thumb, or by picking a
-different drink from the menu the arm mimes at them. The offer, not the delivery,
-is the interaction. Building it end to end
-moved our attention from the sensing question we started with to a design
-question we did not anticipate: once a robot speaks first, the interaction lives
-or dies on how cheaply the person can answer, in whatever modality their hands
-and attention happen to allow. Treating modalities as substitutable, separating
-what to offer from when to interrupt, and letting every non-essential subsystem
-fail open were the three commitments that made an unsolicited robot tolerable to
-work next to. We offer them as design guidance for state-aware service robots,
-and the open questions they raise as an agenda for evaluating one.
+BrewBot demonstrates an end-to-end approach to human-state-aware robotic
+assistance in which physiological sensing, proactive interaction, multimodal
+communication, smart-home integration, and embodied action are connected within
+one system. The central challenge that emerged was not simply how to infer a
+state or how to deliver a drink, but how a robot should negotiate assistance
+when it initiates the interaction itself.
+
+Three design considerations summarize this experience. First, estimating
+\emph{what} might be useful should be separated from deciding \emph{when}
+interaction is appropriate. Second, multimodal interaction becomes more
+meaningful when modalities can substitute for one another according to the
+user's situation. Third, state inference should inform a proposal rather than
+remove human authority over the resulting action.
+
+BrewBot therefore treats physiological state not as an instruction, but as a
+reason to ask. The robot may take the initiative, but the user decides whether
+the interaction continues, which modality it uses, and what the robot ultimately
+does.

@@ -20,10 +20,6 @@
 \usetikzlibrary{arrows.meta, positioning, fit, backgrounds}
 \usepackage{booktabs}
 
-% TODO: replace with the official name of the lab space, then the marker
-% disappears from the PDF. Used in the introduction and in Section 3.1.
-\newcommand{\labname}{\itodo{official lab name}}
-
 \definecolor{lightgrey}{rgb}{0.925, 0.925, 0.925}
 \newcommand{\todo}[1]{\texttt{\colorbox{lightgrey}{\textcolor{red}{TODO: #1}}}\newline}
 \newcommand{\itodo}[1]{\texttt{\colorbox{lightgrey}{\textcolor{red}{TODO: #1}}}}
@@ -50,14 +46,14 @@
 %%
 %% The "title" command has an optional parameter,
 %% allowing the author to define a "short title" to be used in page headers.
-\title[BrewBot]{BrewBot: A Physiological-State-Aware Drink Server}
+\title[BrewBot]{BrewBot: Human-State-Aware Multimodal Interaction for Robotic Drink Assistance}
 
 \author{Yannick Martin}
 \affiliation{%
   \institution{LMU Munich}
   \city{Munich}
   \country{Germany}}
-\email{martiyan7@gmail.com}
+%%\email{martiyan7@gmail.com}
 
 \author{David Schmutz}
 \affiliation{%
@@ -75,21 +71,29 @@
 %% The abstract is a short summary of the work to be presented in the
 %% article.
 \begin{abstract}
-Wearable sensors make latent human states such as thermal discomfort, arousal
-and fatigue continuously legible, which lets a service robot act before it is
-asked. Acting first, however, moves the difficulty from detection to reply: the
-robot speaks at a moment the person did not choose, and that person may be
-typing, holding something, or simply unwilling to talk. We present BrewBot, a
-ceiling-mounted 6-DOF arm on a linear rail in a shared lab kitchen that infers a
-user's state from a heart-rate sensor and an Empatica E4 wristband, offers a
-fitting drink unprompted, and fetches it. The reply may arrive as speech
-classified by a local language model, as a hand gesture, or as an open palm that
-waves the conversation away entirely --- upon which the arm mimes the menu with
-its own body and reads a thumbs-up. From building the system we extract three
-transferable design patterns: make modalities substitutable, separate
-\emph{what} to offer from \emph{when} to interrupt, and let every non-essential
-subsystem fail open. We also report where wrist-based physiological sensing fell
-short of what the interaction needed.
+Physiological sensing enables robots to adapt their behavior to aspects of a
+user's current state without requiring an explicit request. In proactive
+human--robot interaction, however, state inference is only part of the challenge:
+a robot may initiate an interaction before the user has explicitly invited it, 
+making interruption, user control, and the choice of interaction modality central
+design concerns. We present BrewBot, a robotic drink assistant built around a
+ceiling-mounted Kinova Gen3 arm in a shared lab kitchen. BrewBot combines heart
+rate, electrodermal activity, skin temperature, and motion cues in a rule-based
+estimator to derive coarse-grained candidate user states and corresponding
+beverage suggestions. Importantly, physiological inference determines a
+suggestion rather than an autonomous action: the user remains in control of
+whether and how the interaction proceeds. Suggestions can be accepted, rejected,
+or changed through speech or gestures. An open-palm gesture can interrupt verbal
+interaction and transfer the remaining dialogue to an embodied gesture mode in
+which the robot mimes beverage options and receives thumbs-up or thumbs-down
+responses. BrewBot subsequently prepares or fetches the selected drink using the
+robot arm and smart-home infrastructure, with collaborative interaction required
+for non-automated tasks such as filling a glass at the tap. BrewBot as an
+integrated design case rather than an empirically evaluated HRI system and
+discuss three design considerations emerging from its implementation:
+separating state inference from interruption policy, treating modalities as
+substitutable rather than merely parallel, and preserving user agency under
+proactive assistance.
 \end{abstract}
 
 %%
